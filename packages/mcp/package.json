@@ -1,0 +1,1 @@
+{"name": "@aicos/mcp", "version": "0.1.0", "type": "module", "main": "./dist/index.js", "types": "./dist/index.d.ts", "exports": {".": {"types": "./dist/index.d.ts", "default": "./src/index.ts"}}, "scripts": {"build": "tsc"}, "dependencies": {"@modelcontextprotocol/sdk": "^1.0.0"}, "devDependencies": {"typescript": "^5.5.0"}}
