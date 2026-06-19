@@ -1,5 +1,5 @@
 import type { TraceEntry, EvidenceChainMeta } from "./types.js";
-import { StepTraceRecorder, DecisionTraceRecorder, ToolCallTraceRecorder, SnapshotRecorder, ReasoningTraceRecorder } from "./trace-recorders.js";
+import { StepTraceRecorder, DecisionTraceRecorder, ToolCallTraceRecorder, SnapshotRecorder, ReasoningTraceRecorder, VerificationTraceRecorder } from "./trace-recorders.js";
 export declare class EvidenceChain {
     private entries;
     private meta;
@@ -8,6 +8,8 @@ export declare class EvidenceChain {
     readonly toolCalls: ToolCallTraceRecorder;
     readonly snapshots: SnapshotRecorder;
     readonly reasoning: ReasoningTraceRecorder;
+    /** ★ ADR-004: 验证记录器 */
+    readonly verifications: VerificationTraceRecorder;
     constructor(chainId: string, taskId: string, taskInput: string);
     append(entry: TraceEntry): void;
     getMeta(): EvidenceChainMeta;

@@ -69,6 +69,29 @@ export function extractJSON(raw) {
     if (isValidJSON(text)) {
         return { json: text, source: "raw" };
     }
+    // Level 5: 宽松模式 — 尝试从混合文本中提取最外层 JSON 对象
+    // 某些 LLM（如 LongCat）会在 JSON 前后添加解释性文字
+    const relaxedMatch = text.match(/\{[\s\S]*?"(?:score|colorPalette|typography|confidence)"[\s\S]*?\}/);
+    if (relaxedMatch) {
+        // 尝试修复常见问题：尾随逗号、注释等
+        let candidate = relaxedMatch[0]
+            .replace(/,\s*([}\]])/g, "$1") // 移除尾随逗号
+            .replace(/\/\/.*$/gm, "") // 移除单行注释
+            .replace(/\/\*[\s\S]*?\*\//g, ""); // 移除多行注释
+        if (isValidJSON(candidate)) {
+            return { json: candidate, source: "relaxed" };
+        }
+    }
+    // Level 6: 终极回退 — 尝试用大括号配对从全文提取
+    const braceStart = text.indexOf("{");
+    const braceEnd = text.lastIndexOf("}");
+    if (braceStart >= 0 && braceEnd > braceStart) {
+        const candidate = text.slice(braceStart, braceEnd + 1)
+            .replace(/,\s*([}\]])/g, "$1");
+        if (isValidJSON(candidate) && candidate.length > 20) {
+            return { json: candidate, source: "brace-pair" };
+        }
+    }
     return null;
 }
 /** 快速检查字符串是否为合法 JSON */

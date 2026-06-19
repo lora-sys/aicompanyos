@@ -57,7 +57,7 @@ export interface SnapshotEntry {
   metadata?: Record<string, unknown>;
 }
 
-// === Reasoning Trace: LLM 推理过程记录 ===
+// === Reasoning Trace: LLM 推理过程 ===
 export interface ReasoningTraceEntry {
   type: "reasoning";
   traceId: string;
@@ -72,13 +72,40 @@ export interface ReasoningTraceEntry {
   metadata?: Record<string, unknown>;
 }
 
+// === Verification Trace: 验证执行记录 (ADR-004) ===
+export interface VerificationTraceEntry {
+  type: "verification";
+  traceId: string;
+  timestamp: string;
+  taskId: string;
+
+  /** 关联的目标 ID */
+  goalId: string;
+  /** 使用的验证方法 */
+  method: string;
+  /** 验证是否通过 */
+  passed: boolean;
+  /** 验证耗时 ms */
+  durationMs: number;
+  /** 证据摘要（完整证据存储在单独的证据文件中） */
+  evidenceSummary: {
+    methodType: string;
+    passed: boolean;
+    keyOutput: string;
+  };
+  /** 所在的迭代轮次 */
+  round: number;
+  metadata?: Record<string, unknown>;
+}
+
 // 联合类型
 export type TraceEntry =
   | StepTraceEntry
   | DecisionTraceEntry
   | ToolCallTraceEntry
   | SnapshotEntry
-  | ReasoningTraceEntry;
+  | ReasoningTraceEntry
+  | VerificationTraceEntry; // ★ ADR-004: 新增验证追踪记录
 
 // Evidence Chain 元数据
 export interface EvidenceChainMeta {
@@ -94,5 +121,6 @@ export interface EvidenceChainMeta {
     toolCalls: number;
     snapshots: number;
     reasonings: number;
+    verifications: number; // ★ ADR-004: 新增验证记录计数
   };
 }

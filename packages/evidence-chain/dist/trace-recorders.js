@@ -81,4 +81,15 @@ export class ReasoningTraceRecorder {
         };
     }
 }
+// === Verification Trace Recorder: 验证执行记录 (ADR-004) ===
+export class VerificationTraceRecorder {
+    record(params) {
+        return {
+            type: "verification",
+            traceId: randomUUID(),
+            timestamp: new Date().toISOString(),
+            ...params,
+        };
+    }
+}
 //# sourceMappingURL=trace-recorders.js.map

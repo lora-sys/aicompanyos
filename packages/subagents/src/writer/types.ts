@@ -24,6 +24,8 @@ export interface WriterInput {
   // === Loop Engineering: Critic 反馈注入 ===
   criticFeedback?: string; // 来自 LoopHarness 的完整 Critic 审核报告文本
   rewriteRound?: number; // 当前是第几轮重写 (1 = 首次, 2+ = 重写)
+  // === 自定义 System Prompt（支持不同内容格式切换）===
+  customSystemPrompt?: string; // 来自 DepartmentConfig 的自定义 Writer System Prompt（优先级最高）
 }
 
 // Writer 输出

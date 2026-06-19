@@ -16,6 +16,7 @@
  */
 import { DEFAULT_WRITING_CRITERIA } from "./grading-criteria.js";
 import { retryWithBackoff } from "../utils/retry.js";
+import { CompletionGuard } from "../completion-guard/guard.js";
 const DEFAULT_CONFIG = {
     maxIterations: 5,
     enableDegradationGuard: true,
@@ -50,6 +51,8 @@ export class LoopModule {
     evolution;
     criteria;
     config;
+    /** ADR-004: 目标驱动完成度守护者 */
+    completionGuard;
     constructor(params) {
         this.planner = params.planner;
         this.generator = params.generator;
@@ -57,6 +60,14 @@ export class LoopModule {
         this.evolution = params.evolution;
         this.criteria = params.criteria ?? DEFAULT_WRITING_CRITERIA;
         this.config = { ...DEFAULT_CONFIG, ...params.config };
+        // 初始化 CompletionGuard（如果启用且有验收目标）
+        if (this.config.enableCompletionGuard && this.config.acceptanceCriteria && this.config.acceptanceCriteria.length > 0) {
+            this.completionGuard = new CompletionGuard(this.config.acceptanceCriteria, {
+                ...this.config.completionGuardConfig,
+                llmProvider: this.config.llmProviderFn, // ★ P0-2a: LLM Provider 对接
+            });
+            console.log(`[LoopModule] CompletionGuard 启用: ${this.config.acceptanceCriteria.length} 个验收目标`);
+        }
     }
     /** 获取当前配置（只读） */
     getConfig() { return this.config; }
@@ -155,8 +166,34 @@ export class LoopModule {
                 `passed=${evaluation.passed}, decision=${strategicDecision}` +
                 (stopReason !== "excellent" && stopReason !== "passed" ? `, will continue...` : `, STOP (${stopReason})`));
             // --- Check termination conditions ---
+            // ★ ADR-004: CompletionGuard 目标驱动停止检查（优先于分数门控）
+            let guardStopReason;
+            if (this.completionGuard) {
+                try {
+                    // v0.3.1+: 注入质量分数给 Guard（用于质量门控）
+                    this.completionGuard.setQualityScore(evaluation.totalScore);
+                    const guardResult = await this.completionGuard.check(output);
+                    if (guardResult.stopCondition) {
+                        guardStopReason = `guard_${guardResult.stopCondition.reason}`;
+                        console.log(`[LoopModule] Round ${round}: CompletionGuard → ${guardResult.stopCondition.reason} ` +
+                            `(${guardResult.progress.verified}/${guardResult.progress.total} verified)`);
+                    }
+                }
+                catch (e) {
+                    // Guard 异常不阻断主流程，退化为原有逻辑
+                    console.warn(`[LoopModule] CompletionGuard 检查异常:`, e instanceof Error ? e.message : e);
+                }
+            }
+            // 原有停止条件（与 Guard 并存：任一触发即停止）
             if (stopReason === "excellent" || stopReason === "passed")
                 break;
+            if (guardStopReason) {
+                // 用 guard 的原因覆盖 stopReason
+                const lastIter = iterations[iterations.length - 1];
+                if (lastIter)
+                    lastIter.stopReason = guardStopReason;
+                break;
+            }
             if (stopReason === "stagnation_pivot") {
                 // Pivot: 不终止循环，但通知 Generator 下次换个方向
                 console.log(`[LoopModule] Pivot 触发! 连续 ${stagnationCount} 轮无改善`);
@@ -181,6 +218,36 @@ export class LoopModule {
         }
         // 构建最终结果
         const finalEval = iterations[iterations.length - 1]?.evaluation ?? this.emptyEvaluation(0);
+        // ★ ADR-004: 从 CompletionGuard 提取目标完成度信息
+        let goalSnapshot;
+        let stopCondition;
+        let completionProgress;
+        if (this.completionGuard) {
+            const snapshot = this.completionGuard.getGoalSnapshot();
+            goalSnapshot = Array.from(snapshot.entries()).map(([id, gs]) => ({
+                goalId: id,
+                status: gs.state,
+            }));
+            // 获取最终停止条件（如果 guard 触发了停止）
+            const lastCheckProgress = this.completionGuard.getProgress();
+            completionProgress = {
+                totalGoals: lastCheckProgress.total,
+                verifiedGoals: lastCheckProgress.verified,
+                progressPercent: lastCheckProgress.progressPercent,
+            };
+            // stopCondition 在循环中已通过 guardResult.stopCondition 设置
+            // 这里从最后一次 check 结果中重新获取（简化：直接用 progress 推断）
+            if (lastCheckProgress.verified === lastCheckProgress.total && lastCheckProgress.total > 0) {
+                stopCondition = {
+                    reason: "all_goals_verified",
+                    verifiedGoals: goalSnapshot
+                        .filter((g) => g.status === "verified")
+                        .map((g) => ({ goalId: g.goalId, evidence: {} })),
+                    totalRounds: iterations.length,
+                    totalDurationMs: Date.now() - startTime,
+                };
+            }
+        }
         return {
             iterations,
             bestOutput: bestOutput ?? (iterations[0]?.output ?? null),
@@ -190,6 +257,10 @@ export class LoopModule {
             totalRounds: iterations.length,
             totalDurationMs: Date.now() - startTime,
             evolutionSummary,
+            // ★ ADR-004
+            goalSnapshot,
+            stopCondition,
+            completionProgress,
         };
     }
     // ============================================================

@@ -92,4 +92,6 @@ export interface PlanStep {
   description: string;
   expectedOutput: string;
   toolsNeeded: string[];
+  /** ★ ADR-004: 扩展元数据（用于存储 AcceptanceGoals 等） */
+  metadata?: Record<string, unknown>;
 }

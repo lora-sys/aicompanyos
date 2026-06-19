@@ -56,6 +56,59 @@
 | **EvidenceChain** | 完整执行过程的证据链，记录每轮迭代的输入/输出/评分/决策 | 证据链, audit trail |
 | **Artifact** | 每个 PlanStep 执行后产生的产物文件（如 .md 文章） | 产物, output, deliverable |
 
+## CompletionGuard 体系（ADR-004）
+
+> 目标驱动自验证停止条件体系 — 让 AI Agent 从「输出一段答案」走向「完成一个任务」
+
+| Term | Definition | Aliases to avoid |
+|------|-----------|------------------|
+| **AcceptanceGoal** | 单个可验证的完成条件，包含 id / description / verifyBy（验证方法列表） / priority / required | 验收目标, acceptance criterion |
+| **GoalStatus** | 目标状态机：pending → verifying → verified(✅) / failed(❌) / blocked(🛑) / skipped(⏭️)，failed 超过 maxRetries 后降级为 blocked | 目标状态, goal state |
+| **StopCondition** | 停止条件联合类型：all_goals_verified(交付) / any_goal_blocked(阻塞报告) / max_effort_exceeded(努力耗尽) / error(错误) | 停止条件, stop reason |
+| **VerificationMethod** | 验证方法（7种，按确定性从高到低）：command / test / lint / browser_check / file_exists / content_match / llm_assertion | 验证方式, verification type |
+| **CompletionGuard** | 完成守卫器 — 管理 AcceptanceGoal[] 生命周期、每轮执行验证流水线、根据目标状态产生 StopCondition、将验证证据记录到 EvidenceChain | 守卫器, completion checker |
+| **EvidenceRecord** | 每次验证产生的确定性证据（含 method / passed / evidence 内容 / durationMs），按验证方法类型有不同的证据子类型 | 证据记录, verification evidence |
+| **BlockerReason** | 目标被阻塞的原因：missing_dependency / human_input_required / external_service / circular_dependency / environment / unknown | 阻塞原因, blocker |
+| **outputProcessor** | LoopHarness 的输出后处理器回调（由 CLI 层注入），签名为 `(rawContent, ctx) => Promise<ProcessedOutput>`。解决 loop-engine ↔ content-production 循环依赖的关键设计模式 | 输出处理器, 后处理回调 |
+| **Memory Precipitation（记忆沉淀）** | 每次 Loop 执行完成后，系统经验写入 self.jsonl、用户偏好写入 user.jsonl、视觉DNA 写入 design.mdx。三者构成内容产出部的核心知识资产，每次创作围绕这些沉淀的风格进行 | 记忆持久化, 知识沉淀 |
+
+## 部门制架构（ADR-005）
+
+> 同一套 Loop Engine 的不同配置剖面 — 先做深再做广
+
+| Term | Definition | Aliases to avoid |
+|------|-----------|------------------|
+| **Department** | 部门 — 同一套 Loop Engine 的不同配置剖面。每个部门 = 一套完整的 AgentProfile + GoalTemplate + OutputPipeline + QualityGate | 部门, domain profile |
+| **DepartmentConfig** | 部门配置接口 — 包含 departmentId / agentProfile / goalTemplates / outputPipeline / toolSet / qualityGate，可直接注入 LoopHarness.departmentConfig | 部门配置, dept config |
+| **ContentType** | 内容格式类型：article（图文/长文） / seed（种草/短图文） / short-video（短视频脚本） / newsletter（Newsletter/周报） | 内容类型, format type |
+| **AgentProfile** | Agent 人格配置 — 包含 writerSystemPrompt / writerConstraints（篇幅/结构/禁止项/要求/风格/受众） / criticDimensions / styleGuide | 人格配置, agent profile |
+| **OutputPipeline** | 输出后处理管线 — 按 postProcessors 链顺序执行：FormatConverter → MetadataInjector → PlatformAdapter → QualityChecker，产出 ProcessedOutput | 输出管线, output pipeline |
+| **ProcessedOutput** | 经过 OutputPipeline 处理后的最终交付物（如平台适配 HTML / 分镜脚本文件 / 邮件 HTML） | 处理后输出, final deliverable |
+| **QualityGateConfig** | 部门专属质量门槛 — 可覆盖默认 GradingCriteria 维度权重、新增部门特有维度（如 emoji 密度评分）、自定义 pass/excellence 阈值 | 质量门槛, quality gate |
+| **WriterConstraints** | Writer 行为约束 — 包含 lengthConstraint（字数范围） / structureRequirement（必须章节+单节长度） / prohibitions（禁止事项） / requirements（必须元素） / tone（语言风格） / targetAudience（目标受众） | 写手约束, writer constraints |
+| **ContentProductionDepartment** | 内容产出部 — AI Company OS 的第一个部门实现，提供 4 种 ContentType 的完整 DepartmentConfig | 内容产出部, content dept |
+
+## 动态团队架构 (v0.3.1+)
+
+> 团队是任务的函数，不是 contentType 的函数 — 根据任务特征自动组队
+
+| Term | Definition | Aliases to avoid |
+|------|-----------|------------------|
+| **ITeamManager** | 团队经理接口 — 纯编排层核心接口，两个方法：`composeTeam()` 组建团队 + `createWorkerFactories()` 生成工厂 Map。不执行 LLM 调用 | 团队经理, team manager |
+| **TaskFeatures** | 任务特征（7 维）— TaskAnalyzer 从 taskInput 提取的结构化信息：domain / needsResearch / hasVisualContent / length / qualityTier / complexity / estimatedSteps | 任务特征, task features |
+| **ContentDomain** | 内容领域分类：tech / lifestyle / finance / education / general | 领域, domain |
+| **ITeam** | 团队 — 一次任务执行的 Agent 集合：id / taskId / workers[] / goal / features / matchedRuleId | 团队, team |
+| **IWorker** | 团队成员描述 — id / role / agentType / configOverride / required。不包含 Agent 实例，只含配置 | 工作成员, worker |
+| **WorkerRole** | Worker 角色枚举：writer(必需) / critic(必需) / researcher(可选) / uiux-designer(可选) / reviewer(可选) | 角色, role |
+| **TeamCompositionRule** | 组合规则 — match(条件判断) + team(成员定义) + reasoning(原因) + priority(优先级)。按 priority 升序匹配，第一个命中决定团队 | 组合规则, rule |
+| **TaskAnalyzer** | 特征提取器 — 基于 RegExp 规则引擎从 taskInput 提取 TaskFeatures，不依赖 LLM | 分析器, analyzer |
+| **TeamComposer** | 规则匹配引擎 — 维护有序规则表，对 TaskFeatures 从上到下匹配，第一个命中返回团队定义 | 组合器, composer |
+| **WorkerRegistry** | 全局 Worker 注册表 — 管理所有可用 Worker 类型，支持 role/agentType 双索引查询 | 注册表, registry |
+| **HistoryReader** | Memory 回流读取器 — 读取 self.jsonl/user.jsonl/self.md → 构建 Prompt 前缀 → 注入 Writer System Prompt。护城河的**读取端** | 历史读取器, memory reader |
+| **HistoryPromptResult** | HistoryReader 的输出 — 包含 promptPrefix(Markdown 前缀文本) + stats(统计) + sourceData(原始数据引用) | 前缀结果, prompt result |
+| **护城河公式** | 写入能力 × 读取回流 × 决策影响 = 护城河强度。v0.3.0 只有写入端(100%)，v0.3.1 补齐读取端(可用) | moat, competitive advantage |
+| **ContentTeamManager** | 内容产出部的 ITeamManager 实现 — 注入 CONTENT_TEAM_RULES(8条规则)，自动关联 contentType | 内容团队经理, dept team manager |
+
 ## 评估体系（5 维固定标准）
 
 | Term | Definition | Aliases to avoid |
@@ -109,6 +162,12 @@ Task ──► InterrogateEngine ──► PlanEngine(IPlannerAgent)
                     ┌───────────────────┼───────────────────┐
                     ▼                   ▼                   ▼
              LoopModule ◄──── LoopHarness ◄──── CLI (app.ts)
+              │  │                  ▲
+              │  │         DepartmentConfig (ADR-005)
+              │  │           ├─ AgentProfile → Writer Prompt
+              │  │           ├─ QualityGate → Critic Dimensions
+              │  │           ├─ GoalTemplates → AcceptanceGoal[]
+              │  │           └─ OutputPipeline → ProcessedOutput
               │  │
               │  ├─ WriterAgent(IGeneratorAgent).generate()
               │  │     → 产出 Artifact
@@ -116,16 +175,27 @@ Task ──► InterrogateEngine ──► PlanEngine(IPlannerAgent)
               │  ├─ CriticAgent(IEvaluatorAgent).evaluate()
               │  │     → GradingResult (vs GradingCriteria)
               │  │
+              │  ├─ CompletionGuard (ADR-004) ← 新增
+              │  │     → AcceptanceGoal[] 验证
+              │  │     → VerificationMethod (7种)
+              │  │     → StopCondition 判定
+              │  │     → EvidenceRecord 记录
+              │  │
               │  └─ IterationHandoff (轮次间传递)
               │
               ▼
        SimpleEvolutionAgent(IEvolutionAgent).analyze()
               │
               ▼
-         EvidenceChain (全量记录)
+         EvidenceChain (全量记录 + VerificationTraceEntry)
 
 Outer Loop: Execute → VerifyEngine → (❌) → Replan → Execute...
-Inner Loop: Generate → Evaluate → (未达标) → Generate... (≤4 rounds)
+Inner Loop: Generate → Evaluate → Guard.check() → (未达标) → Generate... (目标驱动)
+
+Department 数据流:
+  ContentProductionDepartment.getConfig(contentType)
+    → DepartmentConfig → LoopHarness.departmentConfig
+      → OutputPipeline.postProcessors → ProcessedOutput (最终交付)
 ```
 
 ## 示例对话
@@ -175,4 +245,4 @@ Inner Loop: Generate → Evaluate → (未达标) → Generate... (≤4 rounds)
 
 ---
 
-*最后更新：2026-06-16 | 基于端到端执行日志（3 轮 Outer Loop, 33 Artifacts, 全部通过）*
+*最后更新：2026-06-18 | 基于端到端执行日志（3 轮 Outer Loop, 33 Artifacts, 全部通过）+ ADR-004 (CompletionGuard) + ADR-005 (Department Architecture)*

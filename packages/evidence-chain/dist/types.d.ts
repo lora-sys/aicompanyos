@@ -68,7 +68,30 @@ export interface ReasoningTraceEntry {
     taskId: string;
     metadata?: Record<string, unknown>;
 }
-export type TraceEntry = StepTraceEntry | DecisionTraceEntry | ToolCallTraceEntry | SnapshotEntry | ReasoningTraceEntry;
+export interface VerificationTraceEntry {
+    type: "verification";
+    traceId: string;
+    timestamp: string;
+    taskId: string;
+    /** 关联的目标 ID */
+    goalId: string;
+    /** 使用的验证方法 */
+    method: string;
+    /** 验证是否通过 */
+    passed: boolean;
+    /** 验证耗时 ms */
+    durationMs: number;
+    /** 证据摘要（完整证据存储在单独的证据文件中） */
+    evidenceSummary: {
+        methodType: string;
+        passed: boolean;
+        keyOutput: string;
+    };
+    /** 所在的迭代轮次 */
+    round: number;
+    metadata?: Record<string, unknown>;
+}
+export type TraceEntry = StepTraceEntry | DecisionTraceEntry | ToolCallTraceEntry | SnapshotEntry | ReasoningTraceEntry | VerificationTraceEntry;
 export interface EvidenceChainMeta {
     chainId: string;
     taskId: string;
@@ -82,6 +105,7 @@ export interface EvidenceChainMeta {
         toolCalls: number;
         snapshots: number;
         reasonings: number;
+        verifications: number;
     };
 }
 //# sourceMappingURL=types.d.ts.map

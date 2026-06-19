@@ -66,8 +66,32 @@ export class CriticAgent {
         this.llmProvider = llmProvider;
         this.criteria = criteria;
     }
+    // ★ ADR-005: 支持部门专属评估维度覆盖
+    /** 部门自定义评估维度（优先于默认 GradingCriteria） */
+    customDimensions = null;
+    /**
+     * 设置部门专属评估维度
+     * 覆盖默认的 GradingCriteria 维度定义
+     */
+    setCustomDimensions(dimensions) {
+        this.customDimensions = dimensions;
+        console.log(`[CriticAgent] 已设置 ${dimensions.length} 个部门专属评估维度: ` +
+            dimensions.map((d) => d.name).join(", "));
+    }
     /** 动态构建 system prompt：使用 GradingCriteria 构造评估标准 */
     buildSystemPrompt() {
+        // ★ ADR-005: 如果有部门专属维度，使用部门维度构建 Prompt
+        if (this.customDimensions && this.customDimensions.length > 0) {
+            const dims = this.customDimensions;
+            const totalMax = dims.reduce((sum, d) => sum + d.maxScore, 0);
+            let prompt = `你是一个严格但建设性的内容审核员。请从以下 ${dims.length} 个维度评估内容质量：\n\n`;
+            for (const dim of dims) {
+                prompt += `${Math.round((dim.maxScore / totalMax) * 100)}%. **${dim.name}** (${dim.id}): ${dim.description}\n`;
+                prompt += `   评分标准（0-${dim.maxScore}分）:\n${dim.scoringGuide}\n\n`;
+            }
+            prompt += `总分 0-${totalMax} 分。低于 ${this.PASS_THRESHOLD} 分必须给出具体的修改建议。即使通过也要给出改进空间。`;
+            return prompt;
+        }
         return formatCriteriaForEvaluator(this.criteria);
     }
     // 实现 AgentExecutor 接口

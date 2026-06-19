@@ -15,6 +15,7 @@
  * - LoopModule: 抽象接口，任何实现 Planner/Generator/Evaluator 的 Agent 都可以接入
  */
 import type { GradingCriteria, GradingResult, StrategicDecision, IterationHandoff } from "./grading-criteria.js";
+import type { AcceptanceGoal, StopCondition, CompletionGuardConfig } from "../completion-guard/types.js";
 /** 规划器：将任务拆解为执行计划 */
 export interface IPlannerAgent<Input = any, Plan = any> {
     /** 生成执行计划 */
@@ -54,7 +55,7 @@ export interface IEvolutionAgent {
     }>;
 }
 export interface LoopModuleConfig {
-    /** 最大迭代次数（含首次） */
+    /** 最大迭代次数（含首次）— 作为安全阀保留，主停止由 CompletionGuard 控制 */
     maxIterations: number;
     /** 是否启用退化保护 */
     enableDegradationGuard: boolean;
@@ -64,6 +65,14 @@ export interface LoopModuleConfig {
     stagnationThreshold: number;
     /** Context Reset: 是否在每次迭代间重置 Generator 上下文 */
     useContextReset: boolean;
+    /** 是否启用 CompletionGuard（目标驱动停止条件） */
+    enableCompletionGuard?: boolean;
+    /** AcceptanceCriteria — 验收目标列表 */
+    acceptanceCriteria?: AcceptanceGoal[];
+    /** CompletionGuard 配置 */
+    completionGuardConfig?: Partial<CompletionGuardConfig>;
+    /** LLM Provider 包装函数 — 用于验证阶段的 LLM 断言 */
+    llmProviderFn?: (prompt: string) => Promise<string>;
 }
 export interface LoopIteration<TOutput = any> {
     /** 迭代轮次 (1-based) */
@@ -100,6 +109,19 @@ export interface LoopModuleResult<TOutput = any> {
         patternFound: string;
         suggestions: string[];
     };
+    /** 目标完成度快照 */
+    goalSnapshot?: Array<{
+        goalId: string;
+        status: "pending" | "verifying" | "verified" | "failed" | "blocked" | "skipped";
+    }>;
+    /** 结构化停止条件（替代 stopReason 字符串） */
+    stopCondition?: StopCondition;
+    /** 完成进度 */
+    completionProgress?: {
+        totalGoals: number;
+        verifiedGoals: number;
+        progressPercent: number;
+    };
 }
 /**
  * Loop Module — 可复用的循环执行引擎
@@ -125,6 +147,8 @@ export declare class LoopModule<TInput = string, TPlan = any, TOutput = any> {
     private evolution?;
     private criteria;
     private config;
+    /** ADR-004: 目标驱动完成度守护者 */
+    private completionGuard?;
     constructor(params: {
         planner: IPlannerAgent<TInput, TPlan>;
         generator: IGeneratorAgent<TPlan, TOutput>;

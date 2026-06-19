@@ -10,6 +10,7 @@ import { SkillToolsAdapter } from "./skill-tools-adapter.js";
  */
 export declare class ToolRegistry {
     private tools;
+    private aliases;
     private handlers;
     private mcpAdapter?;
     private skillsAdapter?;
@@ -17,6 +18,20 @@ export declare class ToolRegistry {
      * 注册一个工具
      */
     register(definition: ToolDefinition, handler: ToolHandler): void;
+    /**
+     * ★ 注册工具别名（让 Agent 用短名访问 MCP 工具）
+     *
+     * @example
+     * registry.addAlias("web_search", "exa_exa_web_search");
+     * registry.has("web_search") // true
+     * registry.find("web_search") // 返回 exa_exa_web_search 的定义
+     */
+    addAlias(alias: string, canonicalName: string): void;
+    /**
+     * ★ 批量注册 MCP 工具时自动创建常用别名
+     * 自动检测搜索类工具并创建 web_search 短别名
+     */
+    private setupMCPAliases;
     /**
      * 批量注册 Local Tools
      */
@@ -36,7 +51,11 @@ export declare class ToolRegistry {
      */
     connectSkills(skillsAdapter: SkillToolsAdapter): void;
     /**
-     * 查找工具
+     * ★ 解析工具名（支持别名 → 返回规范名）
+     */
+    private resolveName;
+    /**
+     * 查找工具（支持别名）
      */
     find(toolName: string): ToolDefinition | undefined;
     /**
@@ -48,7 +67,7 @@ export declare class ToolRegistry {
      */
     listByCategory(category: ToolCategory): ToolDefinition[];
     /**
-     * 执行工具调用（统一入口）
+     * 执行工具调用（统一入口，支持别名）
      */
     execute(request: ToolExecuteRequest): Promise<ToolExecuteResult>;
     /**
@@ -59,7 +78,7 @@ export declare class ToolRegistry {
         errors?: string[];
     };
     /**
-     * 检查工具是否存在
+     * 检查工具是否存在（支持别名）
      */
     has(toolName: string): boolean;
 }

@@ -1,5 +1,5 @@
 import * as fs from "node:fs/promises";
-import { StepTraceRecorder, DecisionTraceRecorder, ToolCallTraceRecorder, SnapshotRecorder, ReasoningTraceRecorder, } from "./trace-recorders.js";
+import { StepTraceRecorder, DecisionTraceRecorder, ToolCallTraceRecorder, SnapshotRecorder, ReasoningTraceRecorder, VerificationTraceRecorder, } from "./trace-recorders.js";
 // === Evidence Chain 主类 ===
 export class EvidenceChain {
     entries = [];
@@ -10,12 +10,15 @@ export class EvidenceChain {
     toolCalls;
     snapshots;
     reasoning;
+    /** ★ ADR-004: 验证记录器 */
+    verifications;
     constructor(chainId, taskId, taskInput) {
         this.steps = new StepTraceRecorder();
         this.decisions = new DecisionTraceRecorder();
         this.toolCalls = new ToolCallTraceRecorder();
         this.snapshots = new SnapshotRecorder();
         this.reasoning = new ReasoningTraceRecorder();
+        this.verifications = new VerificationTraceRecorder();
         this.meta = {
             chainId,
             taskId,
@@ -28,6 +31,7 @@ export class EvidenceChain {
                 toolCalls: 0,
                 snapshots: 0,
                 reasonings: 0,
+                verifications: 0, // ★ ADR-004
             },
         };
     }
@@ -51,6 +55,9 @@ export class EvidenceChain {
                 break;
             case "reasoning":
                 this.meta.entryCounts.reasonings++;
+                break;
+            case "verification": // ★ ADR-004
+                this.meta.entryCounts.verifications++;
                 break;
         }
     }
@@ -103,6 +110,7 @@ export class EvidenceChain {
             toolCalls: entries.filter((e) => e.type === "tool_call").length,
             snapshots: entries.filter((e) => e.type === "snapshot").length,
             reasonings: entries.filter((e) => e.type === "reasoning").length,
+            verifications: entries.filter((e) => e.type === "verification").length, // ★ ADR-004
         };
         return chain;
     }

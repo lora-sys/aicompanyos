@@ -17,6 +17,7 @@
  */
 import type { LoopContext, ExecutionPlan } from "../types.js";
 import type { LLMProvider } from "../interrogate/types.js";
+import type { DepartmentConfig, ProcessedOutput } from "../department/types.js";
 import type { StepExecutionResult, AgentExecutor, OrchestratorAgentContext } from "../orchestrator/types.js";
 import type { ToolRegistry } from "../tool-registry/registry.js";
 import type { IGeneratorAgent, IEvaluatorAgent, GradingCriteria } from "../loop-module/index.js";
@@ -46,6 +47,21 @@ export interface LoopHarnessConfig {
     maxReplans: number;
     /** 是否启用退化保护（score 下降则停止重写） */
     enableDegradationGuard: boolean;
+    /** 部门配置（内容产出部/研发部/运营部等的不同配置剖面） */
+    departmentConfig?: DepartmentConfig;
+    /**
+     * ★ ADR-005: 输出后处理器（由 CLI 层传入，避免循环依赖）
+     *
+     * 签名: (rawContent: string, context: { rawContent, metadata?, taskId? }) => Promise<ProcessedOutput>
+     *
+     * LoopHarness 不直接依赖 @aicos/content-production，
+     * 而是通过此函数实现 OutputPipeline 的执行。
+     */
+    outputProcessor?: (rawContent: string, context: {
+        rawContent: string;
+        metadata?: Record<string, unknown>;
+        taskId?: string;
+    }) => Promise<ProcessedOutput>;
 }
 /**
  * 动态 Few-shot 样例
@@ -104,6 +120,8 @@ export interface HarnessExecutionResult {
     totalIterations: number;
     /** 总耗时 ms */
     totalDurationMs: number;
+    /** 经过部门配置的后处理链处理后的交付物（仅当 departmentConfig.outputPipeline 存在时有值） */
+    processedOutput?: import("../department/types.js").ProcessedOutput;
 }
 /**
  * Loop Engineering Harness
@@ -153,6 +171,23 @@ export declare class LoopHarness {
      */
     setDynamicExamples(examples: DynamicExample[]): void;
     /**
+     * ★ ADR-005: 设置部门配置
+     *
+     * 由 CLI 层在用户选择内容格式后调用。
+     * 注入 DepartmentConfig 到 LoopHarness，影响：
+     * - extractGoalsForStep(): 部门 GoalTemplate 优先于通用模板
+     * - getOrCreateModule(): 部门验收标准和质量门槛注入 LoopModule
+     * - executeWithLoop(): OutputPipeline 后处理执行
+     */
+    setDepartmentConfig(config: import("../department/types.js").DepartmentConfig): void;
+    /**
+     * ★ ADR-005: 设置输出后处理器回调
+     *
+     * 由 CLI 层传入，避免 loop-engine 直接依赖 content-production 包。
+     * 回调签名与 LoopHarnessConfig.outputProcessor 一致。
+     */
+    setOutputProcessor(processor: NonNullable<LoopHarnessConfig["outputProcessor"]>): void;
+    /**
      * 检查是否可以使用 LoopModule 主路径
      */
     private canUseLoopModule;
@@ -193,9 +228,26 @@ export declare class LoopHarness {
      */
     private convertToStepLoopResult;
     /**
+     * ★ ADR-005: 从 finalOutputs 中提取原始文本内容
+     *
+     * 用于 OutputPipeline 的输入。
+     * 优先提取 content 字段，其次尝试序列化整个 output 对象。
+     */
+    private extractRawContent;
+    /**
      * 查找 Writer step 后紧跟的 Critic step
      */
     private findFollowingCriticStep;
+    /**
+     * ★ ADR-004/005: 从 PlanStep 中提取验收目标
+     *
+     * 数据来源优先级：
+     * 1. step.metadata.acceptanceGoals — Planner 显式定义的目标（最高优先）
+     * 2. DepartmentConfig.goalTemplates — 部门专属模板（新! 第二优先）
+     * 3. GoalTemplateRegistry 自动匹配 — 根据步骤描述自动生成（兜底）
+     */
+    private static goalTemplateRegistry;
+    private extractGoalsForStep;
 }
 export {};
 //# sourceMappingURL=engine.d.ts.map

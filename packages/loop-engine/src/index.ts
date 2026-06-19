@@ -185,3 +185,104 @@ export type {
   IEvaluatorAgent,
   IEvolutionAgent,
 } from "./loop-module/index.js";
+
+// ★ ADR-004: Completion Guard — 目标驱动自验证停止条件体系
+export {
+  CompletionGuard,
+  VerificationPipeline,
+  CommandExecutor,
+  TestExecutor,
+  LintExecutor,
+  BrowserExecutor,
+  FileExistenceExecutor,
+  ContentMatchExecutor,
+  LLMAssertionExecutor,
+  DEFAULT_COMPLETION_GUARD_CONFIG,
+} from "./completion-guard/index.js";
+export type {
+  // 验证方法
+  VerificationMethod,
+  CommandVerification,
+  TestVerification,
+  LintVerification,
+  BrowserVerification,
+  FileExistenceVerification,
+  ContentMatchVerification,
+  LLMAssertionVerification,
+  // 证据
+  EvidenceRecord,
+  EvidenceContent,
+  CommandEvidence,
+  TestEvidence,
+  LintEvidence,
+  BrowserEvidence,
+  FileEvidence,
+  ContentMatchEvidence,
+  LLMEvidence,
+  // 目标与状态
+  AcceptanceGoal,
+  GoalStatus,
+  BlockerReason,
+  // 停止条件
+  StopCondition,
+  AllGoalsVerifiedStop,
+  AnyGoalBlockedStop,
+  MaxEffortExceededStop,
+  ErrorStop,
+  // 配置与结果
+  CompletionGuardConfig,
+  CompletionCheckResult,
+  CompletionProgress,
+  VerificationContext,
+  VerificationExecutor,
+} from "./completion-guard/index.js";
+
+// ★ ADR-005: Department Architecture — 部门制抽象层
+export {
+  CONTENT_TYPES,
+} from "./department/index.js";
+export type {
+  ContentType,
+  PlatformType,
+  WriterConstraints,
+  CriticDimension,
+  StyleGuide,
+  AgentProfile,
+  DepartmentGoalTemplate,
+  OutputPostProcessor,
+  PlatformAdapterProcessor,
+  MetadataInjector,
+  FormatConverter,
+  QualityCheckerProcessor,
+  OutputPipelineConfig,
+  DimensionWeightOverride,
+  ExtraDimension,
+  QualityGateConfig,
+  DepartmentConfig,
+  ProcessedOutput,
+} from "./department/index.js";
+
+// ★ Dynamic Team Architecture — 动态团队抽象层
+export {
+  TaskAnalyzer,
+  TeamComposer,
+  TeamManager,
+  WorkerRegistry,
+  globalWorkerRegistry,
+} from "./team/index.js";
+export type {
+  WorkerRole,
+  IWorker,
+  WorkerConfig,
+  TaskFeatures,
+  ContentDomain,
+  ITeam,
+  TeamCompositionRule,
+  TeamWorkerDef,
+  ITeamManager,
+  TeamContext,
+  AgentFactory,
+  IWorkerRegistry,
+  WorkerRegistration,
+} from "./team/index.js";
+export { WORKER_ROLES, LENGTH_THRESHOLDS } from "./team/index.js";

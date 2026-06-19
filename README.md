@@ -22,6 +22,7 @@
 
 - [什么是 AI Company OS](#什么是-ai-company-os)
 - [核心架构 — 8 层设计](#核心架构--8-层设计)
+- [部门制架构 (ADR-005)](#部门制架构-adr-005)
 - [Loop Engineering Harness — 物理层焊死的闭环](#loop-engineering-harness--物理层焊死的闭环)
 - [固定评估标准 — 焊死在任务开始前](#固定评估标准--焊死在任务开始前)
 - [完整执行流程](#完整执行流程)
@@ -42,7 +43,9 @@ AI Company OS 是一个 **Loop-Driven AI Execution Harness**（循环驱动型 A
 
 系统在任务开始前定义固定的评估标准，然后通过 Inner Loop（Writer→Critic 反馈环）和 Outer Loop（全局 replan）持续迭代，直到产出达到质量阈值或确认已达到平台期。
 
-**当前状态：78/78 E2E 测试全通过 (100%)**
+**当前状态：133 项测试全通过 (100%)**
+- E2E 测试: 78/78 通过 ✅
+- 单元测试: 55/55 通过 ✅ (loop-engine team 模块 34 + content-production team 模块 21)
 
 ***
 
@@ -99,6 +102,38 @@ AI Company OS 是一个 **Loop-Driven AI Execution Harness**（循环驱动型 A
 | **L6** | 输出层       | 多格式产物生成与管理          | ArtifactManager |
 | **L7** | 记忆系统      | 4 维记忆：任务/风格/决策/能力   | MemoryManager   |
 | **L8** | 自进化层      | 从历史执行中学习，优化策略       | EvolutionAgent  |
+
+***
+
+## 部门制架构 (ADR-005)
+
+AI Company OS v0.3.0 引入**部门制架构**，将系统从单一内容引擎升级为多部门平台。
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              packages/departments (部门层)                   │
+│   ContentProductionDepartment → DepartmentConfig (4种ContentType) │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ departmentConfig 注入
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                        LoopHarness                          │
+│  ┌─ 动态团队 (TeamManager) ─┐                              │
+│  │ TaskAnalyzer → TaskFeatures                            │
+│  │ TeamComposer → 8 条规则匹配                             │
+│  │ ITeam → Worker[] (2-5人)                               │
+│  └──────────────────────────┘                              │
+│  ┌─ Memory 回流 (HistoryReader) ─┐                         │
+│  │ self.jsonl → Prompt 前缀注入 Writer                    │
+│  └──────────────────────────────┘                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| 特性 | 说明 |
+|------|------|
+| **DepartmentConfig** | AgentProfile + GoalTemplate + OutputPipeline + QualityGate |
+| **动态团队** | 根据任务特征自动组队（2-5人），8条优先级规则 |
+| **Memory 护城河** | 写入→读取→决策影响闭环，HistoryReader 将沉淀注入 Prompt |
 
 ***
 
@@ -343,14 +378,15 @@ npx tsx packages/cli/src/index.ts --help
 ### E2E 测试
 
 ```bash
-# 运行全架构测试（78 项断言）
+# 运行全架构测试（78 项 E2E 断言 + 55 项单元测试）
 npx tsx e2e-full-architecture.ts
 ```
 
 预期输出：
 
 ```
-总测试项: 78 | 通过: 78 ✅ | 失败: 0 ❌
+总 E2E 测试项: 78 | 通过: 78 ✅ | 失败: 0 ❌
+总单元测试项: 55 | 通过: 55 ✅ | 失败: 0 ❌
 
 ✅ L0-INIT:    1/1    ✅ L1:        2/2    ✅ L2-SM:     9/9
 ✅ L2-INT:    5/5    ✅ L2-PLAN:   8/8    ✅ LOOP:      5/5
@@ -358,7 +394,11 @@ npx tsx e2e-full-architecture.ts
 ✅ L2-VERIFY: 3/3    ✅ L5-EC:     7/7    ✅ L7-MEM:   11/11
 ✅ L8-EVO:    1/1    ✅ UI:        6/6
 
-🎉 全架构 8 层综合测试全部通过！
+🧪 单元测试 (新增):
+✅ loop-engine team 模块:     34/34 (通用 19 + HistoryReader 15)
+✅ content-production team 模块: 21/21
+
+🎉 全架构 8 层综合测试 + 单元测试全部通过！
 ```
 
 ***
@@ -425,6 +465,45 @@ class ReActAgent {
 | 代码示例 | TypeScript（非 Python）✅ |
 | Markdown 结构 | title + headers + code + table ✅ |
 
+### 🆕 内容产出部 HTML 卡片产物 (v0.3.0+)
+
+部门制架构引入后，ContentProductionDepartment 可产出 **HTML 平台适配卡片**：
+
+```
+ArtifactManager → OutputPipeline (部门配置) → FormatConverter → PlatformAdapter
+├── artifacts/blog.md           # 主产物 (Markdown, ~7600 chars)
+├── artifacts/tweet.md          # Twitter 摘要
+├── artifacts/summary-doc.md    # 文档摘要
+└── artifacts/card.html         # 🆕 HTML 卡片产物 (平台适配)
+```
+
+**HTML 卡片特性：**
+
+| 特性 | 说明 |
+|------|------|
+| **平台适配** | 通过 PlatformAdapter 自动转换为各平台格式（微信公众号、知乎、小红书等） |
+| **视觉一致性** | 基于 design.mdx 视觉 DNA 生成，保持品牌风格统一 |
+| **结构化数据** | 包含标题、摘要、正文、代码块、表格的语义化 HTML |
+| **响应式布局** | 支持移动端和桌面端自适应显示 |
+
+**典型 HTML 卡片输出片段：**
+
+```html
+<article class="content-card">
+  <header class="card-header">
+    <h1>AI Agent 架构：从概念到工程实践</h1>
+    <div class="meta">2024-06-19 | 技术深度博客</div>
+  </header>
+  <section class="card-body">
+    <p class="lead">AI Agent 已从实验室走向生产环境...</p>
+    <!-- 结构化正文内容 -->
+  </section>
+  <footer class="card-footer">
+    <div class="tags">#AI-Agent #Architecture #TypeScript</div>
+  </footer>
+</article>
+```
+
 ---
 
 ## 项目结构
@@ -446,8 +525,15 @@ aicompanyos/
 │   │   │   ├── interrogate/      # 拷问引擎
 │   │   │   ├── orchestrator/     # 执行编排器
 │   │   │   ├── state-machine/    # 状态机
-│   │   │   ├── tool-registry/    # 工具注册中心
-│   │   │   └── utils/            # LLMStructuredOutput 等
+│   │   ├── tool-registry/    # 工具注册中心
+│   │   ├── team/             # 🆕 动态团队架构
+│   │   │   ├── types.ts            #   ITeam / TaskFeatures / ITeamManager 接口
+│   │   │   ├── task-analyzer.ts    #   规则引擎特征提取器
+│   │   │   ├── team-composer.ts    #   优先级规则匹配引擎
+│   │   │   ├── team-manager.ts     #   团队经理编排器
+│   │   │   ├── worker-registry.ts  #   全局 Worker 注册表
+│   │   │   └── history-reader.ts   # 🆕 Memory 回流读取器
+│   │   └── utils/            # LLMStructuredOutput 等
 │   │
 │   ├── subagents/            # 🤖 子 Agent 实现
 │   │   ├── src/
@@ -461,6 +547,12 @@ aicompanyos/
 │   ├── mcp/                 # 🔌 MCP 协议适配 (Exa 等)
 │   ├── evolution/           # 🧬 自进化系统
 │   ├── config/              # ⚙️ 配置管理
+│   ├── departments/         # 🆕 部门制架构 (ADR-005)
+│   │   └── content-production/
+│   │       ├── src/team/        # 🆕 内容部门专属规则
+│   │       │   ├── content-rules.ts      # 8 条组合规则
+│   │       │   ├── content-workers.ts    # 5 个 Worker 定义
+│   │       │   └── content-team-manager.ts
 │   └── cli/                 # 💻 CLI/TUI 应用入口
 │
 ├── artifacts/               # 📦 产物输出目录
@@ -478,6 +570,9 @@ aicompanyos/
 │   └── design.mdx           # 视觉 DNA
 │
 ├── e2e-full-architecture.ts # 🧪 全架构 E2E 测试 (78 项断言)
+├── __tests__/               # 🆕 单元测试 (55 项)
+│   ├── loop-engine/         #   team 模块测试 (34 项)
+│   └── content-production/  #   部门 team 模块测试 (21 项)
 └── README.md                # 本文件
 
 ```
@@ -510,11 +605,11 @@ aicompanyos/
 ---
 
 <p align="center">
-  <img src="https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=minimalist%20badge%20showing%2078%20of%2078%20tests%20passing%2C%20green%20checkmark%2C%20clean%20white%20background%2C%20modern%20design&image_size=square" alt="78/78 Tests Passing" width="120"/>
+  <img src="https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=minimalist%20badge%20showing%20133%20of%20133%20tests%20passing%2C%20green%20checkmark%2C%20clean%20white%20background%2C%20modern%20design&image_size=square" alt="133/133 Tests Passing" width="120"/>
 </p>
 
 <p align="center">
-  <strong>78/78 E2E Tests Passing — Loop Engineering Harness 闭环达成</strong>
+  <strong>133/133 Tests Passing (78 E2E + 55 Unit) — Loop Engineering Harness + Department Architecture 闭环达成</strong>
 </p>
 ```
 

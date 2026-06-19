@@ -61,31 +61,9 @@ const LLM_CALL_DEFINITION = {
         required: ["prompt"],
     },
 };
-// web_search 工具定义（Internet Capability Layer - Exa 搜索）
-const WEB_SEARCH_DEFINITION = {
-    name: "web_search",
-    category: ToolCategory.LOCAL,
-    description: "互联网搜索工具，通过 Exa 搜索引擎检索实时网页信息",
-    inputSchema: {
-        type: "object",
-        properties: {
-            query: {
-                type: "string",
-                description: "搜索查询关键词",
-                required: true,
-            },
-            numResults: {
-                type: "number",
-                description: "返回结果数量（默认 5，最大 10）",
-            },
-            category: {
-                type: "string",
-                description: "搜索类别：research/news/wiki/company 等",
-            },
-        },
-        required: ["query"],
-    },
-};
+// web_search 工具定义已移至 MCP 层（@aicos/mcp → Exa Server）
+// 本地不再注册占位定义，避免与 MCP 别名冲突
+// 当 MCP 未连接时，web_search 工具将不可用（WriterAgent 会优雅降级跳过搜索）
 // Local Tools 处理器
 class LocalToolsHandler {
     llmProvider;
@@ -107,9 +85,7 @@ class LocalToolsHandler {
                 case "llm_call":
                     data = await this.handleLLMCall(request.params);
                     break;
-                case "web_search":
-                    data = await this.handleWebSearch(request.params);
-                    break;
+                // web_search 已移至 MCP 层（通过 Exa Server 提供）
                 default:
                     return {
                         success: false,
@@ -169,24 +145,12 @@ class LocalToolsHandler {
         messages.push({ role: "user", content: prompt });
         return this.llmProvider.chat(messages);
     }
-    // Web 搜索（Internet Capability Layer - 通过 MCP Exa 转发）
-    // 注意：实际执行时会优先路由到已注册的 MCP 工具（如 exa_exa_web_search），
-    // 此处作为本地 fallback 定义，当 MCP 未连接时返回提示信息
-    async handleWebSearch(params) {
-        const { query, numResults, category } = params;
-        if (!query)
-            throw new Error("缺少必要参数: query");
-        // 如果没有配置 MCP 搜索能力，返回提示
-        throw new Error("web_search 需要 Exa MCP Server 连接。请先通过 registry.registerMCPTools(mcpAdapter) 注册 MCP 工具，" +
-            "然后使用 exa_exa_web_search 工具进行搜索。" +
-            (category ? `\n原始查询: ${query} (类别: ${category})` : `\n原始查询: ${query}`));
-    }
 }
 // 导出工具定义和处理器工厂函数
 export function createLocalToolsHandler(llmProvider) {
     return new LocalToolsHandler(llmProvider);
 }
 export function getLocalToolDefinitions() {
-    return [FILE_READ_DEFINITION, FILE_WRITE_DEFINITION, LLM_CALL_DEFINITION, WEB_SEARCH_DEFINITION];
+    return [FILE_READ_DEFINITION, FILE_WRITE_DEFINITION, LLM_CALL_DEFINITION];
 }
 //# sourceMappingURL=local-tools.js.map

@@ -8,7 +8,6 @@ declare class LocalToolsHandler implements ToolHandler {
     private handleFileRead;
     private handleFileWrite;
     private handleLLMCall;
-    private handleWebSearch;
 }
 export declare function createLocalToolsHandler(llmProvider?: LLMProvider): LocalToolsHandler;
 export declare function getLocalToolDefinitions(): ToolDefinition[];

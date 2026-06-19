@@ -5,6 +5,7 @@ import type {
   ToolCallTraceEntry,
   SnapshotEntry,
   ReasoningTraceEntry,
+  VerificationTraceEntry,
 } from "./types.js";
 
 // === Step Trace Recorder: 状态转换记录 ===
@@ -142,6 +143,26 @@ export class ReasoningTraceRecorder {
   }): ReasoningTraceEntry {
     return {
       type: "reasoning",
+      traceId: randomUUID(),
+      timestamp: new Date().toISOString(),
+      ...params,
+    };
+  }
+}
+
+// === Verification Trace Recorder: 验证执行记录 (ADR-004) ===
+export class VerificationTraceRecorder {
+  record(params: {
+    goalId: string;
+    method: string;
+    passed: boolean;
+    durationMs: number;
+    evidenceSummary: VerificationTraceEntry["evidenceSummary"];
+    round: number;
+    taskId: string;
+  }): VerificationTraceEntry {
+    return {
+      type: "verification",
       traceId: randomUUID(),
       timestamp: new Date().toISOString(),
       ...params,

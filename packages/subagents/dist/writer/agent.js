@@ -32,13 +32,22 @@ export class WriterAgent {
 - 代码示例默认使用 TypeScript / JavaScript，与项目技术栈保持一致
 - 仅当用户明确指定其他编程语言时，才使用该语言编写示例
 - 即使引用第三方库的官方文档是 Python 示例，也应将其转写为 TypeScript 等价实现`;
-    constructor(tools, llmProvider) {
+    customSystemPrompt;
+    constructor(tools, llmProvider, customSystemPrompt) {
         this.tools = tools;
         this.llmProvider = llmProvider;
         // 防御性检查：确保 llmProvider 已正确传入
         if (!llmProvider) {
             throw new Error("WriterAgent 构造失败：llmProvider 参数不能为空");
         }
+        this.customSystemPrompt = customSystemPrompt;
+    }
+    /**
+     * 设置自定义 System Prompt（运行时动态切换 Writer 风格）
+     * @param prompt 自定义 system prompt 内容
+     */
+    setCustomSystemPrompt(prompt) {
+        this.customSystemPrompt = prompt;
     }
     // 实现 AgentExecutor 接口
     async execute(params) {
@@ -189,15 +198,17 @@ export class WriterAgent {
     // 步骤2：搜集资料（调用 web_search）
     async research(topic, context, taskId) {
         if (!this.tools.has("web_search")) {
-            console.warn("web_search 工具不可用");
+            console.warn("[WriterAgent] web_search 工具不可用，跳过搜索步骤");
             return [];
         }
+        console.log(`[WriterAgent] 开始搜索: "${topic.slice(0, 60)}..."`);
         // 提取关键词用于搜索
         const keywords = topic
             .split(/[，。！？；\s]+/)
             .filter((w) => w.length > 1)
             .slice(0, 5)
             .join(" ");
+        console.log(`[WriterAgent] 搜索关键词: "${keywords}"`);
         const result = await this.tools.execute({
             toolName: "web_search",
             params: { query: keywords },
@@ -205,12 +216,32 @@ export class WriterAgent {
             taskId,
         });
         if (!result.success || !result.data) {
-            console.warn("搜索失败:", result.error);
+            console.warn(`[WriterAgent] 搜索失败: ${result.error ?? "无数据返回"}`);
             return [];
         }
-        // 解析搜索结果为字符串数组
+        console.log(`[WriterAgent] ✅ 搜索成功! 返回数据类型: ${typeof result.data}, 长度: ${String(result.data).length} 字符`);
+        // ★ 解析搜索结果为字符串数组（防御性处理 MCP 返回的各种格式）
         const data = result.data;
-        return data.map((item) => `${item.title} - ${item.url}`);
+        // 情况1：期望格式 Array<{ title, url }>
+        if (Array.isArray(data)) {
+            const parsed = data.map((item) => {
+                if (typeof item === "string")
+                    return item;
+                const obj = item;
+                return `${obj.title ?? ""} - ${obj.url ?? ""}`;
+            }).filter(Boolean);
+            console.log(`[WriterAgent] 解析到 ${parsed.length} 条搜索结果 (Array格式)`);
+            return parsed;
+        }
+        // 情况2：MCP 返回纯文本（拼接后返回）
+        if (typeof data === "string") {
+            const parsed = data.split("\n").filter((line) => line.trim().length > 0);
+            console.log(`[WriterAgent] 解析到 ${parsed.length} 条搜索结果 (文本格式)`);
+            return parsed;
+        }
+        // 情况3：未知格式，转为字符串
+        console.warn(`[WriterAgent] 搜索返回数据格式异常: ${typeof data}, 尝试字符串化处理`);
+        return [String(data)];
     }
     // 步骤3：生成内容（核心 LLM 调用）
     async generateContent(input, researchResults, uiGuidance) {
@@ -278,8 +309,9 @@ export class WriterAgent {
         prompt +=
             "\n请基于以上信息生成高质量的 Markdown 内容，确保内容完整、准确、易读。";
         // 调用 LLM 生成内容
+        const systemPrompt = input.customSystemPrompt ?? this.customSystemPrompt ?? WriterAgent.SYSTEM_PROMPT;
         const rawContent = await this.llmProvider.chat([
-            { role: "system", content: WriterAgent.SYSTEM_PROMPT },
+            { role: "system", content: systemPrompt },
             { role: "user", content: prompt },
         ]);
         // Topic Drift 防漂移检测
