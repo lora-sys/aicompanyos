@@ -118,12 +118,60 @@
       },
       "entryId": "dd123801-43f8-44b6-b573-c042e76eab8f",
       "timestamp": "2026-06-16T09:50:29.757Z"
+    },
+    {
+      "taskType": "content-generation",
+      "pattern": "task-complete-46-artifacts",
+      "type": "success",
+      "lesson": "任务: unknown\n产出: 46 个 Artifact\n完成时间: 2026-06-19T08:32:52.707Z",
+      "capabilityDelta": {
+        "addedCapabilities": [
+          "content-generation",
+          "loop-execution"
+        ],
+        "discoveredLimitations": [],
+        "improvedStrategies": []
+      },
+      "entryId": "f2f80485-b811-44bc-afe4-d4992157f0b2",
+      "timestamp": "2026-06-19T08:32:52.714Z"
+    },
+    {
+      "taskType": "content-generation",
+      "pattern": "task-complete-59-artifacts",
+      "type": "success",
+      "lesson": "任务: unknown\n产出: 59 个 Artifact\n完成时间: 2026-06-19T09:29:13.442Z",
+      "capabilityDelta": {
+        "addedCapabilities": [
+          "content-generation",
+          "loop-execution"
+        ],
+        "discoveredLimitations": [],
+        "improvedStrategies": []
+      },
+      "entryId": "f41505c9-3a2e-4a44-b79a-1abdbadd8b70",
+      "timestamp": "2026-06-19T09:29:13.496Z"
+    },
+    {
+      "taskType": "content-generation",
+      "pattern": "task-complete-60-artifacts",
+      "type": "success",
+      "lesson": "任务: unknown\n产出: 60 个 Artifact\n完成时间: 2026-06-19T09:35:10.591Z",
+      "capabilityDelta": {
+        "addedCapabilities": [
+          "content-generation",
+          "loop-execution"
+        ],
+        "discoveredLimitations": [],
+        "improvedStrategies": []
+      },
+      "entryId": "f563b03f-213c-42d3-990b-2fb8fa3bbd99",
+      "timestamp": "2026-06-19T09:35:10.612Z"
     }
   ],
-  "totalTasksCompleted": 23,
-  "totalSuccessRate": 0.30434782608695654,
+  "totalTasksCompleted": 26,
+  "totalSuccessRate": 0.38461538461538464,
   "knownLimitations": [],
-  "lastUpdated": "2026-06-16T09:50:29.769Z",
+  "lastUpdated": "2026-06-19T09:35:10.622Z",
   "capabilities": [
     {
       "name": "blog-writing",
@@ -141,16 +189,16 @@
     },
     {
       "name": "content-generation",
-      "proficiency": 38,
-      "lastUsed": "2026-06-16T09:50:29.764Z",
-      "successCount": 2,
+      "proficiency": 82,
+      "lastUsed": "2026-06-19T09:35:10.621Z",
+      "successCount": 8,
       "failureCount": 0
     },
     {
       "name": "loop-execution",
-      "proficiency": 40,
-      "lastUsed": "2026-06-16T09:50:29.769Z",
-      "successCount": 2,
+      "proficiency": 75,
+      "lastUsed": "2026-06-19T09:35:10.622Z",
+      "successCount": 8,
       "failureCount": 0
     }
   ],

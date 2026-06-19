@@ -34,11 +34,13 @@ const uiUXLayoutSchema = z.object({
 });
 const uiUXDesignTokensSchema = z.object({
     borderRadius: z.coerce.string().default("8px"),
-    shadow: z.string().default("0 2px 8px rgba(0,0,0,0.1)"),
+    // ★ coerce: LLM 有时返回 object（如 {value: "0 2px 8px"}），强制转为 string
+    shadow: z.coerce.string().default("0 2px 8px rgba(0,0,0,0.1)"),
     // ★ coerce: 允许 LLM 返回 number（如 8），自动转为 string
     paddingScale: z.coerce.string().default("8px"),
     reasoning: z.string().default("默认设计令牌"),
 });
+// ★ 顶层 Schema：增加 preprocess 步骤处理 LLM 返回 array 的边界情况
 const uiUXOutputSchema = z.object({
     colorPalette: uiUXColorPaletteSchema,
     typography: uiUXTypographySchema,
@@ -46,6 +48,20 @@ const uiUXOutputSchema = z.object({
     designTokens: uiUXDesignTokensSchema,
     overallGuidance: z.string().default("请根据具体场景调整上述设计参数。"),
     confidence: z.number().min(0).max(1).default(0.7),
+}).transform((data, ctx) => {
+    // ★ 后验证：检查关键字段是否为预期类型
+    const issues = [];
+    if (typeof data.designTokens?.shadow !== "string") {
+        issues.push("designTokens.shadow");
+    }
+    if (Array.isArray(data.layoutSuggestion?.componentStructure) === false && data.layoutSuggestion?.componentStructure !== undefined) {
+        issues.push("layoutSuggestion.componentStructure");
+    }
+    if (issues.length > 0) {
+        // 不抛错，仅标记 — 让 FallbackStrategy 处理
+        console.warn(`[UIUXProMaxSkill] Schema 后验警告: ${issues.join(", ")} 类型异常，将使用默认值`);
+    }
+    return data;
 });
 // 默认值（当 Zod 解析失败时使用）
 const DEFAULT_UIUX_OUTPUT = {

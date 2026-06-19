@@ -159,6 +159,13 @@ export class LLMStructuredOutput {
         catch (parseError) {
             return this.handleFailure(`JSON 语法错误 (${extracted.source}): ${parseError.message}`);
         }
+        // ★ Step 2.5: 预处理 — LLM 偶尔返回 array 而非 object
+        // 例如: [{"colorPalette": ...}] 而非 {"colorPalette": ...}
+        // 自动取第一个元素
+        if (Array.isArray(unknownData) && unknownData.length > 0) {
+            console.warn(`[LLMStructuredOutput] ⚠️ LLM 返回了 array (length=${unknownData.length})，自动取第一个元素`);
+            unknownData = unknownData[0];
+        }
         // Step 3: Zod schema 验证
         const result = this.schema.safeParse(unknownData);
         if (result.success) {

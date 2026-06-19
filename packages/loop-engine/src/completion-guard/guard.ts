@@ -442,7 +442,7 @@ export class CompletionGuard {
       return {
         reason: "all_goals_verified",
         verifiedGoals,
-        totalRounds: this.roundCount,
+        totalIterations: this.roundCount,
         totalDurationMs: 0, // 由外部填充
       } satisfies StopCondition;
     }

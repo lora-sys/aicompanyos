@@ -184,23 +184,52 @@ async function executeMetadataInjector(
   const meta = params.metadata;
   let result = content;
 
-  // ★ 从 Markdown 内容中提取 h1 标题（优先于 meta.title）
-  let effectiveTitle = meta.title;
-  if (!effectiveTitle || effectiveTitle === "article" || effectiveTitle === "seed" || effectiveTitle === "short-video" || effectiveTitle === "newsletter") {
+  // ★ 标题提取优先级链（物理层焊死，杜绝 undefined）
+  // 1. meta.title（显式传入）
+  // 2. Markdown h1 标题（从内容自动提取）
+  // 3. 第一行非空文本（最终兜底）
+  let effectiveTitle: string | undefined = meta?.title;
+
+  // 排除 contentType 占位符（article/seed/short-video/newsletter 不是真实标题）
+  if (!effectiveTitle || ["article", "seed", "short-video", "newsletter", "undefined"].includes(effectiveTitle)) {
+    effectiveTitle = undefined; // 重置，走后续提取
+  }
+
+  // ★ 策略2：从 Markdown h1 提取
+  if (!effectiveTitle) {
     const h1Match = result.match(/^#\s+(.+)$/m);
     if (h1Match) {
       effectiveTitle = h1Match[1].trim();
     }
   }
 
-  // ★ 关键修复：将提取到的真实标题回写到 context.metadata
-  // 这样下游的 platform_adapter 能拿到正确的标题（而非 contentType 字符串）
-  if (effectiveTitle && (effectiveTitle !== meta.title)) {
+  // ★ 策略3：从第一行非空非标记文本提取（最终兜底）
+  if (!effectiveTitle) {
+    for (const line of result.split("\n")) {
+      const trimmed = line.trim();
+      // 跳过空行、markdown 标记、代码块标记
+      if (trimmed && !trimmed.startsWith("#") && !trimmed.startsWith("```") && !trimmed.startsWith("---") && !trimmed.startsWith("<")) {
+        // 截取前 60 字符作为标题
+        effectiveTitle = trimmed.slice(0, 60).replace(/\*|`|#/g, "").trim();
+        if (effectiveTitle.length > 0) break;
+      }
+    }
+  }
+
+  // ★ 回写到 context.metadata（下游 adapter 依赖此值）
+  if (effectiveTitle) {
     if (!context.metadata) context.metadata = {};
+    const previousTitle = context.metadata.title;
     context.metadata.title = effectiveTitle;
-    console.log(`[OutputPipeline] metadata_injector: 标题已更新 "${meta.title}" → "${effectiveTitle}"`);
+
+    if (previousTitle && previousTitle !== effectiveTitle) {
+      console.log(`[OutputPipeline] metadata_injector: 标题已更新 "${previousTitle}" → "${effectiveTitle}"`);
+    } else {
+      console.log(`[OutputPipeline] metadata_injector: 使用标题 "${effectiveTitle}"`);
+    }
   } else {
-    console.log(`[OutputPipeline] metadata_injector: 使用原标题 "${effectiveTitle}"`);
+    console.warn(`[OutputPipeline] metadata_injector: ⚠️ 无法提取标题，使用默认值`);
+    effectiveTitle = "AI Company OS 产出";
   }
 
   // 在开头注入标题（如果是 HTML）

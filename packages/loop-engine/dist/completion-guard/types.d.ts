@@ -198,7 +198,7 @@ export interface AllGoalsVerifiedStop {
         goalId: string;
         evidence: EvidenceRecord;
     }>;
-    totalRounds: number;
+    totalIterations: number;
     totalDurationMs: number;
 }
 /** 存在阻塞目标 → 停止并报告 */

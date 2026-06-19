@@ -139,7 +139,7 @@ export interface LoopModuleResult<TOutput = any> {
   /** 最终是否优秀 */
   excellent: boolean;
   /** 总迭代次数 */
-  totalRounds: number;
+  totalIterations: number;
   /** 总耗时 ms */
   totalDurationMs: number;
   /** Evolution 分析结果（如果启用） */
@@ -179,7 +179,7 @@ export interface LoopModuleResult<TOutput = any> {
  * });
  *
  * const result = await loop.run("写一篇关于 AI Agent 的技术博客");
- * console.log(result.passed, result.finalScore, result.totalRounds);
+ * console.log(result.passed, result.finalScore, result.totalIterations);
  * ```
  */
 export class LoopModule<
@@ -195,6 +195,8 @@ export class LoopModule<
   private config: LoopModuleConfig;
   /** ADR-004: 目标驱动完成度守护者 */
   private completionGuard?: CompletionGuard;
+  /** 最新一轮 CompletionGuard 检查结果（供 shouldStop() 读取） */
+  private latestGuardResult: import("../completion-guard/types.js").CompletionCheckResult | null = null;
 
   constructor(params: {
     planner: IPlannerAgent<TInput, TPlan>;
@@ -247,10 +249,14 @@ export class LoopModule<
       { maxAttempts: 2, baseDelayMs: 1000, onRetry: (a, e) => console.warn(`[LoopModule] Planner 第 ${a} 次失败 (${e.reason}), 重试中...`) }
     );
 
-    // Step 2-4: Generator → Evaluator → [循环]
-    for (let round = 1; round <= this.config.maxIterations; round++) {
+    // Step 2-4: Generator → Evaluator → [目标驱动循环]
+    // ★ ADR-004 改造：从回合制 for 循环改为目标驱动 while 循环
+    // 停止条件由 CompletionGuard（结构化目标完成度）主导，maxIterations 仅作为安全阀
+    let round = 0;
+    while (!this.shouldStop(iterations, bestScore, lastScore, round)) {
+      round++;
       const iterStart = Date.now();
-      console.log(`[LoopModule] Round ${round}/${this.config.maxIterations}`);
+      console.log(`[LoopModule] Iteration ${round} (目标驱动: guard=${this.completionGuard ? "ON" : "OFF"})`);
 
       // --- Generate（带重试）---
       const handoff = this.buildHandoff(round, iterations, bestScore, lastScore);
@@ -265,11 +271,11 @@ export class LoopModule<
           {
             maxAttempts: 3,
             baseDelayMs: 1500,
-            onRetry: (a, e) => console.warn(`[LoopModule] Round ${round} Generator 第 ${a} 次失败 (${e.reason}), 重试中...`),
+            onRetry: (a, e) => console.warn(`[LoopModule] Iteration ${round} Generator 第 ${a} 次失败 (${e.reason}), 重试中...`),
           }
         );
       } catch (e) {
-        console.error(`[LoopModule] Round ${round} Generator 失败:`, e instanceof Error ? e.message : e);
+        console.error(`[LoopModule] Iteration ${round} Generator 失败:`, e instanceof Error ? e.message : e);
         iterations.push({
           round,
           output: {} as TOutput,
@@ -293,32 +299,25 @@ export class LoopModule<
           {
             maxAttempts: 2,
             baseDelayMs: 1000,
-            onRetry: (a, e) => console.warn(`[LoopModule] Round ${round} Evaluator 第 ${a} 次失败 (${e.reason}), 重试中...`),
+            onRetry: (a, e) => console.warn(`[LoopModule] Iteration ${round} Evaluator 第 ${a} 次失败 (${e.reason}), 重试中...`),
           }
         );
       } catch (e) {
-        console.warn(`[LoopModule] Round ${round} Evaluator 失败:`, e instanceof Error ? e.message : e);
+        console.warn(`[LoopModule] Iteration ${round} Evaluator 失败:`, e instanceof Error ? e.message : e);
         evaluation = this.emptyEvaluation(round);
       }
 
       // --- Strategic Decision ---
       const strategicDecision = await this.makeStrategicDecision(evaluation, iterations, round);
 
-      // --- Degradation Guard ---
+      // --- Degradation Guard（记录但不在此处终止，由 shouldStop() 统一判断）---
+      let isDegraded = false;
       if (this.config.enableDegradationGuard && round > 1 && evaluation.totalScore < lastScore) {
-        console.warn(`[LoopModule] Round ${round}: 退化! ${evaluation.totalScore} < ${lastScore}, 保留最佳版本`);
-        iterations.push({
-          round,
-          output,
-          evaluation,
-          strategicDecision,
-          stopReason: "degradation",
-          durationMs: Date.now() - iterStart,
-        });
-        break;
+        console.warn(`[LoopModule] Iteration ${round}: 退化! ${evaluation.totalScore} < ${lastScore}, 保留最佳版本`);
+        isDegraded = true;
       }
 
-      // 更新最佳版本跟踪
+      // 更新最佳版本跟踪（退化的轮次不更新最佳分数）
       if (evaluation.totalScore > bestScore) {
         bestScore = evaluation.totalScore;
         bestOutput = output;
@@ -334,50 +333,36 @@ export class LoopModule<
         output,
         evaluation,
         strategicDecision,
-        stopReason,
+        stopReason: isDegraded ? "degradation" : stopReason,
         durationMs: Date.now() - iterStart,
       });
 
       // Log
       console.log(
-        `[LoopModule] Round ${round}: score=${evaluation.totalScore}/100, ` +
-        `passed=${evaluation.passed}, decision=${strategicDecision}` +
-        (stopReason !== "excellent" && stopReason !== "passed" ? `, will continue...` : `, STOP (${stopReason})`)
+        `[LoopModule] Iteration ${round}: score=${evaluation.totalScore}/100, ` +
+        `passed=${evaluation.passed}, decision=${strategicDecision}`
       );
 
-      // --- Check termination conditions ---
-
-      // ★ ADR-004: CompletionGuard 目标驱动停止检查（优先于分数门控）
-      let guardStopReason: string | undefined;
+      // --- ★ 目标驱动：CompletionGuard 检查（结果供 shouldStop() 在循环条件中使用）---
       if (this.completionGuard) {
         try {
-          // v0.3.1+: 注入质量分数给 Guard（用于质量门控）
           this.completionGuard.setQualityScore(evaluation.totalScore);
-
           const guardResult = await this.completionGuard.check(output);
+          // 缓存最新 guard 结果，shouldStop() 会在下次循环条件判断时读取
+          this.latestGuardResult = guardResult;
           if (guardResult.stopCondition) {
-            guardStopReason = `guard_${guardResult.stopCondition.reason}`;
             console.log(
-              `[LoopModule] Round ${round}: CompletionGuard → ${guardResult.stopCondition.reason} ` +
+              `[LoopModule] Iteration ${round}: CompletionGuard → ${guardResult.stopCondition.reason} ` +
               `(${guardResult.progress.verified}/${guardResult.progress.total} verified)`
             );
           }
         } catch (e) {
-          // Guard 异常不阻断主流程，退化为原有逻辑
           console.warn(`[LoopModule] CompletionGuard 检查异常:`, e instanceof Error ? e.message : e);
         }
       }
 
-      // 原有停止条件（与 Guard 并存：任一触发即停止）
-      if (stopReason === "excellent" || stopReason === "passed") break;
-      if (guardStopReason) {
-        // 用 guard 的原因覆盖 stopReason
-        const lastIter = iterations[iterations.length - 1];
-        if (lastIter) lastIter.stopReason = guardStopReason as LoopIteration["stopReason"];
-        break;
-      }
+      // Pivot 通知（不终止循环，仅日志）
       if (stopReason === "stagnation_pivot") {
-        // Pivot: 不终止循环，但通知 Generator 下次换个方向
         console.log(`[LoopModule] Pivot 触发! 连续 ${stagnationCount} 轮无改善`);
       }
 
@@ -431,7 +416,7 @@ export class LoopModule<
           verifiedGoals: goalSnapshot
             .filter((g) => g.status === "verified")
             .map((g) => ({ goalId: g.goalId, evidence: {} as any })),
-          totalRounds: iterations.length,
+          totalIterations: iterations.length,
           totalDurationMs: Date.now() - startTime,
         };
       }
@@ -443,7 +428,7 @@ export class LoopModule<
       finalScore: bestScore > 0 ? bestScore : finalEval.totalScore,
       passed: finalEval.passed || bestScore >= this.criteria.passThreshold,
       excellent: finalEval.excellent || bestScore >= this.criteria.excellenceThreshold,
-      totalRounds: iterations.length,
+      totalIterations: iterations.length,
       totalDurationMs: Date.now() - startTime,
       evolutionSummary,
       // ★ ADR-004
@@ -489,7 +474,7 @@ export class LoopModule<
   /** 格式化反馈文本（注入到 Generator） */
   private formatFeedback(evaluation: GradingResult): string {
     const lines: string[] = [
-      `═══ 上一次评估结果 (Round ${evaluation.round}) ═══`,
+      `═══ 上一次评估结果 (Iteration ${evaluation.round}) ═══`,
       ``,
       `【总分】${evaluation.totalScore}/100 (加权: ${evaluation.weightedScore.toFixed(1)})`,
       `【是否通过】${evaluation.passed ? "✅ 通过" : "❌ 未通过"}`,
@@ -563,6 +548,76 @@ export class LoopModule<
       return "stagnation_pivot";
     }
     return "passed"; // continue (will be checked by caller)
+  }
+
+  /**
+   * ★ ADR-004 目标驱动：统一停止条件判断
+   *
+   * 替代原来分散在 for 循环内的多个 break 条件，
+   * 将所有停止逻辑集中到 while 循环的条件判断中。
+   *
+   * 停止优先级（从高到低）：
+   *  1. CompletionGuard 结构化目标完成度（主导）
+   *  2. 质量达标（excellent / passed）
+   *  3. 退化保护（分数下降）
+   *  4. 安全阀（maxIterations 上限）
+   *
+   * @returns true = 应该停止，false = 继续迭代
+   */
+  private shouldStop(
+    iterations: LoopIteration<TOutput>[],
+    bestScore: number,
+    lastScore: number,
+    currentIteration: number
+  ): boolean {
+    // 规则 0: 至少执行一轮（round==0 表示还未开始第一轮）
+    if (currentIteration === 0) return false;
+
+    // 规则 1: CompletionGuard 主导（如果启用且有结果）
+    if (this.completionGuard && this.latestGuardResult) {
+      const guardResult = this.latestGuardResult;
+      if (guardResult.stopCondition) {
+        console.log(
+          `[LoopModule] shouldStop() → CompletionGuard 触发停止: ${guardResult.stopCondition.reason}`
+        );
+        return true;
+      }
+    }
+
+    // 规则 2: 质量达标检查（基于最新一次迭代）
+    const lastIter = iterations[iterations.length - 1];
+    if (lastIter) {
+      const eval_ = lastIter.evaluation;
+      if (eval_.excellent) {
+        console.log(`[LoopModule] shouldStop() → excellent (${eval_.totalScore}/100)`);
+        return true;
+      }
+      if (eval_.passed) {
+        console.log(`[LoopModule] shouldStop() → passed (${eval_.totalScore}/100)`);
+        return true;
+      }
+
+      // 规则 3: 退化保护（第二轮起生效）
+      if (this.config.enableDegradationGuard && iterations.length > 1) {
+        if (eval_.totalScore < lastScore) {
+          console.log(
+            `[LoopModule] shouldStop() → degradation (${eval_.totalScore} < ${lastScore})`
+          );
+          return true;
+        }
+      }
+    }
+
+    // 规则 4: maxIterations 安全阀（仅作为最后兜底，不作为主控制）
+    if (currentIteration >= this.config.maxIterations) {
+      console.log(
+        `[LoopModule] shouldStop() → safety valve: maxIterations (${currentIteration}/${this.config.maxIterations})`
+      );
+      return true;
+    }
+
+    // 默认：继续迭代
+    return false;
   }
 
   /** 推断当前战略方向 */

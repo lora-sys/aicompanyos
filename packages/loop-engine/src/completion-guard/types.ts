@@ -227,7 +227,7 @@ export type StopCondition =
 export interface AllGoalsVerifiedStop {
   reason: "all_goals_verified";
   verifiedGoals: Array<{ goalId: string; evidence: EvidenceRecord }>;
-  totalRounds: number;
+  totalIterations: number;
   totalDurationMs: number;
 }
 

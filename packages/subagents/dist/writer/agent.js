@@ -246,7 +246,23 @@ export class WriterAgent {
     // 步骤3：生成内容（核心 LLM 调用）
     async generateContent(input, researchResults, uiGuidance) {
         // 构造包含所有上下文的 prompt
-        let prompt = `## 任务描述\n${input.planStep.description}\n\n`;
+        let prompt = "";
+        // === ★ P0 主题防漂移：原始任务锚定（物理层焊死在 prompt 最顶部）===
+        // 无论 planStep.description 如何演变，原始任务是不可偏离的绝对参照系
+        const originalTopic = this.extractOriginalTopic(input);
+        if (originalTopic) {
+            prompt += `${"═".repeat(60)}\n`;
+            prompt += `## ★ 原始任务锚定（绝对不可偏离）\n`;
+            prompt += `${"═".repeat(60)}\n\n`;
+            prompt += `**用户的原始任务是：**\n> ${originalTopic}\n\n`;
+            prompt += `**【强制规则 — 违反将直接导致审核不通过】**\n`;
+            prompt += `- 你产出的所有内容必须紧密围绕上述原始任务展开\n`;
+            prompt += `- 禁止将主题偏移到其他技术领域或产品，即使该领域看起来"相关"\n`;
+            prompt += `- 每个章节、每个段落、每个例子都必须与原始任务直接相关\n`;
+            prompt += `- 如果发现自己在写与原始任务无关的内容，立即停止并拉回主题\n`;
+            prompt += `- 下方的"任务描述"只是执行建议，原始任务才是最高优先级\n\n`;
+        }
+        prompt += `## 任务描述\n${input.planStep.description}\n\n`;
         // === Loop Engineering: 重写模式标注 ===
         if (input.rewriteRound && input.rewriteRound > 1) {
             prompt += `> **⚠️ 这是第 ${input.rewriteRound} 轮重写 — 你必须根据下面的 Critic 反馈修改你的产出**\n\n`;
@@ -403,6 +419,45 @@ export class WriterAgent {
         }
         // 去重并返回最多 5 个关键词
         return [...new Set(found)].slice(0, 5);
+    }
+    /**
+     * ★ P0 主题防漂移：从输入上下文中提取原始任务主题
+     *
+     * 优先级：
+     * 1. interrogationResults 中的"原始任务"/"task"/"任务描述" 等维度
+     * 2. planStep.description（作为降级）
+     * 3. interrogationResults 的所有值拼接（最后手段）
+     *
+     * @returns 原始任务字符串，如果无法提取则返回 null
+     */
+    extractOriginalTopic(input) {
+        // 优先 1: 从拷问结果中查找明确的"任务"相关维度
+        if (input.context.interrogationResults) {
+            const taskKeys = [
+                "原始任务", "task", "任务描述", "taskInput",
+                "task_description", "用户需求", "你的需求", "你想写什么",
+                "topic", "主题", "写作主题",
+            ];
+            for (const key of taskKeys) {
+                const value = input.context.interrogationResults[key];
+                if (value && typeof value === "string" && value.trim().length > 2) {
+                    return value.trim();
+                }
+            }
+        }
+        // 优先 2: planStep.description 本身（至少比没有强）
+        if (input.planStep.description && input.planStep.description.trim().length > 5) {
+            return input.planStep.description.trim();
+        }
+        // 优先 3: 拷问结果的所有值拼接（取第一个有实质内容的）
+        if (input.context.interrogationResults) {
+            for (const [, value] of Object.entries(input.context.interrogationResults)) {
+                if (typeof value === "string" && value.trim().length > 5) {
+                    return value.trim();
+                }
+            }
+        }
+        return null;
     }
     // 步骤4：写入文件
     async writeArtifact(content, expectedOutput, taskId) {

@@ -227,14 +227,19 @@ interface IEvolutionAgent {
 run(input)
   ├─ Step 1: Planner.plan(input)          [带重试: maxAttempts=2, baseDelayMs=1000]
   │
-  ├─ Step 2~4: for round = 1..maxIterations
+  ├─ Step 2~4: while (!shouldStop(iterations, bestScore, lastScore, iteration))  ★ 目标驱动
+  │   ├─ iteration++
   │   ├─ Generator.generate(plan, feedback?, handoff?)  [重试: maxAttempts=3, baseDelayMs=1500]
   │   ├─ Evaluator.evaluate(output, criteria, task)     [重试: maxAttempts=2, baseDelayMs=1000]
+  │   ├─ CompletionGuard.check(output) → 更新 latestGuardResult
   │   ├─ makeStrategicDecision(evaluation)              → refine | pivot | accept
-  │   ├─ Degradation Guard: score < lastScore? → break (保留最佳版本)
+  │   ├─ Degradation Guard: score < lastScore? → 标记（由 shouldStop 统一处理）
   │   ├─ 更新 bestOutput / bestScore / stagnationCount
-  │   └─ determineStopReason() → excellent | passed | max_iterations | stagnation_pivot
-  │       └─ excellent 或 passed → break
+  │   └─ shouldStop() 4级优先级判断:
+  │       ├─ P0: CompletionGuard (all_goals_verified / any_goal_blocked / ...)
+  │       ├─ P1: 质量达标 (excellent ≥90 / passed ≥75)
+  │       ├─ P2: 退化保护 (score < lastScore)
+  │       └─ P3: 安全阀 (iteration >= maxIterations) — 仅兜底
   │
   └─ Step 5: Evolution.analyze(evalHistory)    [可选, 重试: maxAttempts=2]
       └─ 返回 LoopModuleResult { iterations, bestOutput, finalScore, passed, excellent, ... }
@@ -287,7 +292,7 @@ interface GradingResult {
     description: string;
     suggestion: string;
   }>;
-  round: number;
+  iteration: number;       // 当前迭代序号（目标驱动模式）
 }
 ```
 
@@ -302,7 +307,7 @@ type StrategicDecision = "refine" | "pivot" | "accept";
 
 /** 迭代状态交接（Context Reset 时传递） */
 interface IterationHandoff {
-  round: number;
+  iteration: number;       // 当前迭代序号（目标驱动模式）
   bestScore: number;
   bestOutput?: string;
   lastEvaluation?: GradingResult;

@@ -146,16 +146,16 @@ Step 6: 部门层（ADR-005 部门制架构）
 │    ]                                           │
 │     → CompletionGuard 使用部门 GoalTemplate    │
 │    ]                                           │
-│    └─ LoopModule.run(step) [Inner Loop]       │
-│       ├─ Round 1: WriterAgent.generate()       │
+│    └─ LoopModule.run(step) [Inner Loop — 目标驱动]      │
+│       ├─ Iteration 1: WriterAgent.generate()     │
 │       │   └─ writingWorkflow:                  │
 │       │      UIUXSkill → research → LLM → write│
 │       │                                       │
-│       ├─ Round 1: CriticAgent.evaluate()       │
-│       │   └─ 5 维评分 → GradingResult          │
+│       ├─ Iteration 1: CriticAgent.evaluate()   │
+│       │   └─ 5 维评分 + CompletionGuard 检查    │
 │       │                                       │
-│       ├─ IterationHandoff → Round 2...4       │
-│       │   (refine / pivot / accept)            │
+│       ├─ shouldStop()? → Iteration 2...N       │
+│       │   (目标驱动: Guard > 质量 > 退化 > 安全阀)│
 │       │                                       │
 │       └─ EvolutionAgent.analyze(history)       │
 │                                               │
@@ -205,12 +205,12 @@ Step 6: 部门层（ADR-005 部门制架构）
 |------|-----------|
 | **Task** | 用户通过 CLI 提交的原始需求 |
 | **Outer Loop** | 全局 replan 循环 (EXECUTE→VERIFY→PLAN, 上限 3 次) |
-| **Inner Loop** | Writer→Critic 反馈环 (上限 4 轮) |
-| **Round** | Inner Loop 中的一次 Generate→Evaluate |
+| **Inner Loop** | Writer→Critic 目标驱动反馈环 (while !shouldStop) |
+| **Iteration** | Inner Loop 中的一次 Generate→Evaluate（目标驱动，由 CompletionGuard 主导停止） |
 | **Replan** | Verify 不达标时重新规划 |
 | **Artifact** | Step 执行后产生的产物文件 (.md / .html) |
 | **GradingCriteria** | 固定评估标准集，运行时不可变（"物理层焊死"） |
-| **IterationHandoff** | Inner Loop 轮次间状态交接对象 |
+| **shouldStop()** | 4 级优先级统一停止条件: Guard > 质量 > 退化 > 安全阀 |
 | **Context Reset** | 每轮清空上下文，仅通过 Handoff 传状态 |
 | **ConsensusLock** | 多视角审核（Writer 自评 + Critic 他评） |
 | **退化保护** | 新版本分数低于历史最佳则回滚 |

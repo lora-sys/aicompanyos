@@ -48,6 +48,17 @@ export declare class WriterAgent implements AgentExecutor, IGeneratorAgent<PlanS
      * 从文本中提取核心主题关键词
      */
     private extractTopicKeywords;
+    /**
+     * ★ P0 主题防漂移：从输入上下文中提取原始任务主题
+     *
+     * 优先级：
+     * 1. interrogationResults 中的"原始任务"/"task"/"任务描述" 等维度
+     * 2. planStep.description（作为降级）
+     * 3. interrogationResults 的所有值拼接（最后手段）
+     *
+     * @returns 原始任务字符串，如果无法提取则返回 null
+     */
+    private extractOriginalTopic;
     private writeArtifact;
 }
 //# sourceMappingURL=agent.d.ts.map
