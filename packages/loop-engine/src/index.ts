@@ -262,6 +262,18 @@ export type {
   ProcessedOutput,
 } from "./department/index.js";
 
+// ★ pi-agent-core 集成 — 新一代循环引擎（基于 AgentHarness + Session + Compaction）
+export {
+  PiAgentLoopEngine,
+} from "./pi-agent-adapter.js";
+export type {
+  PiAgentLoopEngineConfig,
+  PiAgentIteration,
+  PiAgentLoopResult,
+  IPiWriterAgent,
+  IPiCriticAgent,
+} from "./pi-agent-adapter.js";
+
 // ★ Dynamic Team Architecture — 动态团队抽象层
 export {
   TaskAnalyzer,

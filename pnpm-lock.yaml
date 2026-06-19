@@ -107,6 +107,9 @@ importers:
       '@aicos/memory':
         specifier: workspace:*
         version: link:../memory
+      '@earendil-works/pi-agent-core':
+        specifier: ^0.79.3
+        version: 0.79.3(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
       '@earendil-works/pi-ai':
         specifier: ^0.79.3
         version: 0.79.3(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)

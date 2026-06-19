@@ -31,8 +31,15 @@
       "source": "interrogation",
       "confidence": 0.85,
       "updatedAt": "2026-06-16T09:50:29.782Z"
+    },
+    {
+      "key": "主题方向",
+      "value": "大模型的最新技术趋势",
+      "source": "interrogate",
+      "confidence": 0.9,
+      "updatedAt": "2026-06-19T11:55:07.583Z"
     }
   ],
   "createdAt": "2026-06-14T16:38:15.183Z",
-  "lastUpdated": "2026-06-16T09:50:29.782Z"
+  "lastUpdated": "2026-06-19T11:55:07.583Z"
 }

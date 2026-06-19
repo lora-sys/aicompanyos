@@ -31,6 +31,20 @@ export declare class AICOSApp {
     private memoryManager;
     /** 当前活跃的 Modal */
     private activeInterrogateModal;
+    /** 流式内容区 Markdown 组件（动态 setText 更新） */
+    private streamMarkdown;
+    /** 流式内容累积文本 */
+    private streamContent;
+    /** 底部输入框组件 */
+    private inputComponent;
+    /** 执行中输入框锁定标记 */
+    private inputLocked;
+    /** ★ 拷问阶段等待 Promise 的 resolve 函数 */
+    private interrogateResolve;
+    /** Header Text 组件引用（用于增量更新） */
+    private headerText;
+    /** StatusBar Text 组件引用（用于增量更新） */
+    private statusBarText;
     /** LLM Provider */
     private llmProvider;
     /** 工具注册表 */
@@ -63,10 +77,32 @@ export declare class AICOSApp {
      */
     start(): Promise<void>;
     /**
-     * 重建整个 TUI 组件树
-     * 在状态变化时调用，重新构建所有子组件
+     * 重建整个 TUI 组件树（Claude Code 风格：上方流式 + 下方输入框）
+     *
+     * 布局结构：
+     * ┌──────────────────────────────────────┐
+     * │ Header: 状态栏                        │
+     * ├──────────────────────────────────────┤
+     * │                                      │
+     * │  流式内容区 (Markdown)                │  ← 70%
+     * │  - Writer 产出                       │
+     * │  - Critic 评估                       │
+     * │  - 工具调用过程                       │
+     * │  - 目标完成度进度                     │
+     * │                                      │
+     * ├──────────────────────────────────────┤
+     * │ > 输入框 (Input)                     │  ← 底部固定
+     * │ 状态提示 + 快捷键                     │
+     * └──────────────────────────────────────┘
      */
     private rebuildLayout;
+    /** 构建 Header 文本 */
+    private buildHeaderText;
+    /** 构建 StatusBar 文本 */
+    private buildStatusBarText;
+    /** ★ 增量更新 Header 和 StatusBar（更新流式内容的首行和末行） */
+    private updateHeaderContent;
+    private updateStatusBarContent;
     /**
      * 主渲染入口
      * TUI 模式：重建组件树并请求重绘
@@ -79,6 +115,28 @@ export declare class AICOSApp {
     private buildMainComponent;
     /** 构建拷问 Modal 组件（Box overlay 风格） */
     private buildModalComponent;
+    /** ★ 构建执行进度组件（PLANNING/EXECUTING 状态下替代空白 Modal） */
+    private buildProgressComponent;
+    /** ★ 构建底部状态栏组件（快捷键提示 + 状态信息） */
+    private buildStatusBarComponent;
+    /**
+     * 追加流式内容到 Markdown 区域
+     *
+     * 所有 Agent 产出、评估、工具调用、进度信息都通过此方法追加。
+     * 自动触发 TUI 重绘。
+     */
+    private appendStream;
+    /**
+     * 清空流式内容区
+     */
+    private clearStream;
+    /**
+     * ★ 锁定/解锁输入框
+     *
+     * 执行中锁定输入框，完成后解锁。
+     * ★ 每次解锁后重新聚焦 Input 组件，确保键盘事件正确分发。
+     */
+    private setInputLocked;
     /** 构建侧边栏组件: MCP 状态 + 工具列表 */
     private buildSidebarComponent;
     /** 构建底栏组件: 日志流 + 快捷键提示（★ pi-tui Markdown 富文本渲染） */
@@ -93,8 +151,10 @@ export declare class AICOSApp {
      */
     handleInput(input: string): Promise<void>;
     /**
-     * 提交新任务
-     * 触发完整的 Loop 执行流程
+     * 提交新任务（Claude Code 风格：流式显示执行过程）
+     *
+     * ★ 关键：executeLoop() 在后台运行（不 await），
+     * 让 TUI 渲染循环继续工作，这样 appendStream() 的内容才能实时显示。
      */
     submitTask(input: string): Promise<void>;
     /**
@@ -132,18 +192,53 @@ export declare class AICOSApp {
      * 4. 将 Critic 维度注入 CriticAgent
      */
     selectContentType(type: string | ContentType): void;
+    /** 保存原始 console 方法 */
+    private _originalConsoleLog;
+    private _originalConsoleWarn;
+    private _originalConsoleError;
+    /**
+     * ★ 拦截 console.log/warn/error → 静默丢弃
+     *
+     * TUI 模式下 console.log 直接输出会破坏差分渲染。
+     * 关键日志已通过回调机制输出到流式内容区，console.log 全部静默。
+     */
+    private interceptConsoleToStream;
+    private interceptConsole;
+    /**
+     * ★ 恢复原始 console 方法
+     *
+     * 在退出 TUI 模式前调用，确保后续输出正常。
+     */
+    private restoreConsole;
     /**
      * 退出应用
      */
     quit(): void;
     /**
-     * 运行拷问阶段
+     * 运行拷问阶段（Claude Code 风格：对话式，问题流式输出到上方）
+     *
+     * ★ 关键：返回 Promise，等待用户完成所有回答后才 resolve。
+     * 这样 executeLoop() 才会暂停在拷问阶段，不会直接跳到规划。
      */
     private runInterrogationPhase;
     /**
-     * 处理拷问 Modal 的用户输入
+     * 显示下一个拷问问题到流式内容区
+     */
+    private showNextInterrogateQuestion;
+    /**
+     * 处理拷问对话输入（Claude Code 风格：流式对话）
+     *
+     * ★ 拷问完成时调用 this.interrogateResolve() 解除 Promise 等待，
+     * 让 executeLoop() 继续执行后续阶段。
      */
     private handleInterrogateInput;
+    /**
+     * ★ 解除拷问阶段 Promise 等待
+     *
+     * 在 handleInterrogateInput 中拷问完成时调用，
+     * 让 executeLoop() 继续执行后续阶段。
+     */
+    private resolveInterrogate;
     /**
      * 运行规划阶段
      */
@@ -221,6 +316,9 @@ export declare class AICOSApp {
      * 添加日志条目
      */
     private addLog;
+    /** ★ 渲染节流：最多每 200ms 重绘一次 */
+    private _renderTimer;
+    private scheduleRender;
     /**
      * 创建默认 LLM Provider
      * 从环境变量读取配置，强制使用真实 API（禁止 Mock）

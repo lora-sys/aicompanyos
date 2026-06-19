@@ -15,12 +15,13 @@
  * Writer-Critic 反馈环统一走 LoopModule 主路径。
  * ExecutionOrchestrator 仅保留用于非 Writer step（如 ui-ux）的顺序执行。
  */
-import type { LoopContext, ExecutionPlan } from "../types.js";
+import type { LoopContext, ExecutionPlan, PlanStep } from "../types.js";
 import type { LLMProvider } from "../interrogate/types.js";
 import type { DepartmentConfig, ProcessedOutput } from "../department/types.js";
 import type { StepExecutionResult, AgentExecutor, OrchestratorAgentContext } from "../orchestrator/types.js";
 import type { ToolRegistry } from "../tool-registry/registry.js";
 import type { IGeneratorAgent, IEvaluatorAgent, GradingCriteria } from "../loop-module/index.js";
+import { PiAgentLoopEngine } from "../pi-agent-adapter.js";
 interface CriticOutputData {
     overallScore: number;
     dimensions: Record<string, {
@@ -36,6 +37,11 @@ interface CriticOutputData {
         suggestion: string;
     }>;
     reasoning: string;
+}
+/** Writer 输出类型（兼容 LoopModule 的泛型输出） */
+interface WriterOutput {
+    content?: string;
+    [key: string]: unknown;
 }
 /** Inner Loop 配置 */
 export interface LoopHarnessConfig {
@@ -62,6 +68,18 @@ export interface LoopHarnessConfig {
         metadata?: Record<string, unknown>;
         taskId?: string;
     }) => Promise<ProcessedOutput>;
+    /** 是否使用基于 pi-agent-core 的新一代循环引擎（默认 false 保持向后兼容） */
+    usePiAgentCore?: boolean;
+    /** Inner Loop 每次迭代开始时回调 */
+    onIterationStart?: (iteration: number, stepId: string) => void;
+    /** Writer 产出完成时回调 */
+    onWriterOutput?: (content: string, iteration: number) => void;
+    /** Critic 评估完成时回调 */
+    onCriticResult?: (score: number, passed: boolean, suggestions: string[], iteration: number) => void;
+    /** CompletionGuard 目标进度回调 */
+    onGoalProgress?: (verified: number, total: number, stopCondition: string) => void;
+    /** 单步执行完成时回调 */
+    onStepComplete?: (stepId: string, score: number, passed: boolean) => void;
 }
 /**
  * 动态 Few-shot 样例
@@ -144,9 +162,34 @@ export declare class LoopHarness {
     private criteria;
     private currentProfile?;
     private dynamicExamples?;
+    private piAgentEngine;
+    private piEventForwarder;
     constructor(toolRegistry: ToolRegistry, llmProvider: LLMProvider, config?: Partial<LoopHarnessConfig>);
     /** 获取当前配置（只读） */
     getConfig(): Readonly<LoopHarnessConfig>;
+    /**
+     * ★ 获取 pi-agent-core 引擎实例（用于 CLI/TUI 事件订阅）
+     *
+     * 仅在 usePiAgentCore=true 时有值。
+     * 可用于订阅 AgentEvent（agent_start/turn_end/tool_execution_* 等）并转发到 TUI 渲染层。
+     */
+    getPiAgentEngine(): PiAgentLoopEngine<PlanStep, WriterOutput> | null;
+    /**
+     * ★ 设置 pi-agent-core 事件转发回调
+     *
+     * CLI/TUI 层调用此方法注册事件监听器。
+     * 当 PiAgentLoopEngine 产生 AgentEvent 时，自动转发到此回调。
+     *
+     * @example
+     * ```ts
+     * loopHarness.setPiEventForwarder((event) => {
+     *   if (event.type === "turn_end") {
+     *     tui.renderIteration(event.message);
+     *   }
+     * });
+     * ```
+     */
+    setPiEventForwarder(forwarder: (event: any) => void): void;
     /**
      * 注册 Agent 工厂
      *
@@ -215,18 +258,32 @@ export declare class LoopHarness {
      */
     executeWithLoop(plan: ExecutionPlan, context: LoopContext, agentContext?: OrchestratorAgentContext): Promise<HarnessExecutionResult>;
     /**
-     * 使用 LoopModule 执行 Writer → Critic 反馈循环
+     * 使用 LoopModule 或 PiAgentLoopEngine 执行 Writer → Critic 反馈循环
      *
      * 流程：
-     * 1. 创建/复用 LoopModule 实例
-     * 2. 调用 loopModule.run(step) （含 SimpleEvolutionAgent 战略决策）
-     * 3. 将 LoopModuleResult 转换为 StepLoopResult 格式
+     * 1. 检查 usePiAgentCore 配置标志
+     * 2. 若启用 → 使用 PiAgentLoopEngine（pi-agent-core 驱动）
+     * 3. 否则 → 使用 LoopModule（原有手搓引擎，向后兼容）
+     * 4. 将结果统一转换为 StepLoopResult 格式
      */
     private executeWithLoopModule;
     /**
      * 将 LoopModuleResult 转换为 StepLoopResult
      */
     private convertToStepLoopResult;
+    /**
+     * 延迟创建/获取 PiAgentLoopEngine 实例
+     *
+     * 复用已注册的 writer/critic 工厂，
+     * 将 IGeneratorAgent/IEvaluatorAgent 适配为 IPiWriterAgent/IPiCriticAgent 接口。
+     */
+    private getOrCreatePiAgentEngine;
+    /**
+     * 将 PiAgentLoopResult 转换为 StepLoopResult 格式
+     *
+     * 与 convertToStepLoopResult() 结构一致，确保下游代码无感知。
+     */
+    private convertPiResultToStepLoopResult;
     /**
      * ★ ADR-005: 从 finalOutputs 中提取原始文本内容
      *

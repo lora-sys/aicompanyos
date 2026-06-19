@@ -47,6 +47,8 @@ export { LoopModule, SimpleEvolutionAgent, DEFAULT_WRITING_CRITERIA, formatCrite
 export { CompletionGuard, VerificationPipeline, CommandExecutor, TestExecutor, LintExecutor, BrowserExecutor, FileExistenceExecutor, ContentMatchExecutor, LLMAssertionExecutor, DEFAULT_COMPLETION_GUARD_CONFIG, } from "./completion-guard/index.js";
 // ★ ADR-005: Department Architecture — 部门制抽象层
 export { CONTENT_TYPES, } from "./department/index.js";
+// ★ pi-agent-core 集成 — 新一代循环引擎（基于 AgentHarness + Session + Compaction）
+export { PiAgentLoopEngine, } from "./pi-agent-adapter.js";
 // ★ Dynamic Team Architecture — 动态团队抽象层
 export { TaskAnalyzer, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, HistoryReader, DEFAULT_HISTORY_READER_CONFIG, } from "./team/index.js";
 export { WORKER_ROLES, LENGTH_THRESHOLDS } from "./team/index.js";

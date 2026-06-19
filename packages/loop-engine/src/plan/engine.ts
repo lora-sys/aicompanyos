@@ -102,26 +102,46 @@ export class PlanEngine {
 
   /**
    * 根据拷问结果生成执行计划
+   *
+   * v0.4.0: 增加重试逻辑（最多 2 次）+ 兜底默认计划
+   * 解决 LLM 瞬态返回空计划导致整个流程失败的问题。
    */
   async generatePlan(input: PlanGenerationInput): Promise<PlanGenerationResult> {
-    const plan = await this.callLLMForPlan(input);
+    const MAX_RETRIES = 2;
+    let lastError: Error | null = null;
 
-    // 验证计划结构
-    if (!plan.steps || plan.steps.length === 0) {
-      throw new Error("生成的计划无效：至少需要包含一个步骤");
-    }
+    for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+      try {
+        const plan = await this.callLLMForPlan(input);
 
-    // 验证每个步骤的必要字段
-    for (const step of plan.steps) {
-      if (!step.stepId || !step.agentType || !step.description || !step.expectedOutput || !Array.isArray(step.toolsNeeded)) {
-        throw new Error(`步骤 ${step.stepId ?? "(未知)"} 缺少必要字段`);
+        // 验证计划结构
+        if (!plan.steps || plan.steps.length === 0) {
+          throw new Error("生成的计划无效：至少需要包含一个步骤");
+        }
+
+        // 验证每个步骤的必要字段
+        for (const step of plan.steps) {
+          if (!step.stepId || !step.agentType || !step.description || !step.expectedOutput || !Array.isArray(step.toolsNeeded)) {
+            throw new Error(`步骤 ${step.stepId ?? "(未知)"} 缺少必要字段`);
+          }
+        }
+
+        // 后处理：去重合并连续相同 agentType 的步骤
+        plan.steps = this.deduplicateConsecutiveSteps(plan.steps);
+
+        return { plan, reasoning: "" };
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        console.warn(`[PlanEngine] 计划生成第 ${attempt}/${MAX_RETRIES + 1} 次失败: ${lastError.message}`);
+        if (attempt <= MAX_RETRIES) {
+          console.warn(`[PlanEngine] 正在重试... (${attempt}/${MAX_RETRIES})`);
+        }
       }
     }
 
-    // 后处理：去重合并连续相同 agentType 的步骤
-    plan.steps = this.deduplicateConsecutiveSteps(plan.steps);
-
-    return { plan, reasoning: "" };
+    // ★ 全部重试失败 → 使用兜底默认计划（确保流程不中断）
+    console.warn(`[PlanEngine] ★ 全部 ${MAX_RETRIES + 1} 次尝试失败，使用兜底默认计划`);
+    return this.generateFallbackPlan(input.taskInput);
   }
 
   /**
@@ -215,5 +235,38 @@ ${input.availableTools.join(", ")}
     }
 
     return deduped;
+  }
+
+  /**
+   * ★ 兜底默认计划生成器
+   *
+   * 当 LLM 连续多次无法生成有效计划时，使用此方法确保流程不中断。
+   * 生成一个标准的 Writer + Critic 两步计划。
+   */
+  private generateFallbackPlan(taskInput: string): PlanGenerationResult {
+    const fallbackPlan: ExecutionPlan = {
+      id: `fallback-${Date.now()}`,
+      steps: [
+        {
+          stepId: "step-writer-1",
+          agentType: "writer",
+          description: taskInput || "根据用户需求生成内容",
+          expectedOutput: "高质量的内容产出（Markdown 格式）",
+          toolsNeeded: ["research", "write"],
+        },
+        {
+          stepId: "step-critic-1",
+          agentType: "critic",
+          description: "评估 Writer 产出的内容质量",
+          expectedOutput: "结构化评估结果（评分 + 改进建议）",
+          toolsNeeded: [],
+        },
+      ],
+      createdAt: new Date(),
+      taskProfile: "generic" as any,
+    };
+
+    console.log(`[PlanEngine] ★ 兜底计划已生成: ${fallbackPlan.steps.length} 步 (writer + critic)`);
+    return { plan: fallbackPlan, reasoning: "LLM 计划生成连续失败，使用兜底默认计划" };
   }
 }

@@ -114,6 +114,22 @@ export class AICOSApp {
   /** 当前活跃的 Modal */
   private activeInterrogateModal: InterrogateModal | null = null;
 
+  // ★ Claude Code 风格 TUI 组件
+  /** 流式内容区 Markdown 组件（动态 setText 更新） */
+  private streamMarkdown: Markdown | null = null;
+  /** 流式内容累积文本 */
+  private streamContent: string = "";
+  /** 底部输入框组件 */
+  private inputComponent: Input | null = null;
+  /** 执行中输入框锁定标记 */
+  private inputLocked: boolean = false;
+  /** ★ 拷问阶段等待 Promise 的 resolve 函数 */
+  private interrogateResolve: (() => void) | null = null;
+  /** Header Text 组件引用（用于增量更新） */
+  private headerText: Text | null = null;
+  /** StatusBar Text 组件引用（用于增量更新） */
+  private statusBarText: Text | null = null;
+
   /** LLM Provider */
   private llmProvider: LLMProvider;
 
@@ -155,9 +171,60 @@ export class AICOSApp {
     this.toolRegistry = new ToolRegistry();
     this.toolRegistry.registerLocalTools(this.llmProvider);
 
-    // 初始化 Loop Harness
-    this.loopHarness = new LoopHarness(this.toolRegistry, this.llmProvider);
+    // 初始化 Loop Harness（★ v0.4.0: 默认启用 pi-agent-core 引擎 + 流式回调）
+    const usePiCore = process.env.AICOS_USE_LEGACY_ENGINE !== "1";
+    this.loopHarness = new LoopHarness(this.toolRegistry, this.llmProvider, {
+      usePiAgentCore: usePiCore,
+
+      // ★ v0.4.0: 执行进度回调 → 流式输出到 TUI
+      onIterationStart: (iteration, stepId) => {
+        this.appendStream(`\n---\n**⏳ Iteration ${iteration}** \`${stepId}\`\n\n`);
+      },
+      onWriterOutput: (content, iteration) => {
+        // Writer 产出：显示前 300 字预览
+        const preview = content.slice(0, 300).replace(/\n/g, "\n> ");
+        this.appendStream(`\n**📝 Writer 产出** (Iteration ${iteration}):\n\n> ${preview}${content.length > 300 ? "..." : ""}\n\n`);
+      },
+      onCriticResult: (score, passed, suggestions, iteration) => {
+        const status = passed ? "✅ 通过" : "❌ 未通过";
+        this.appendStream(`\n**🔍 Critic 评估** (Iteration ${iteration}): **${score}/100** ${status}\n\n`);
+        if (suggestions.length > 0) {
+          this.appendStream(`改进建议:\n`);
+          for (const s of suggestions.slice(0, 3)) {
+            this.appendStream(`- ${s.slice(0, 80)}\n`);
+          }
+          this.appendStream("\n");
+        }
+      },
+      onGoalProgress: (verified, total, reason) => {
+        const bar = "█".repeat(verified) + "░".repeat(total - verified);
+        this.appendStream(`**🎯 目标进度**: [${bar}] ${verified}/${total} (${reason})\n\n`);
+      },
+      onStepComplete: (stepId, score, passed) => {
+        const status = passed ? "✅" : "❌";
+        this.appendStream(`\n**${status} Step 完成**: \`${stepId}\` — score: ${score}/100\n\n`);
+      },
+    });
     this.loopHarness.setCriteria(DEFAULT_WRITING_CRITERIA);
+
+    if (usePiCore) {
+      // ★ 连接 pi-agent-core 事件到流式内容区
+      this.loopHarness.setPiEventForwarder((event: any) => {
+        const eventType = event?.type ?? "unknown";
+        if (eventType === "agent_start") {
+          this.appendStream("**▶ Agent 启动**\n\n");
+        } else if (eventType === "turn_end") {
+          this.appendStream("**◆ 迭代完成**\n\n");
+        } else if (eventType === "tool_execution_start") {
+          this.appendStream(`🔧 \`${event.toolName}\` 执行中...\n`);
+        } else if (eventType === "tool_execution_end") {
+          const status = event.isError ? " ❌" : " ✅";
+          this.appendStream(`🔧 \`${event.toolName}\`${status}\n\n`);
+        } else if (eventType === "agent_end") {
+          this.appendStream("**■ Agent 执行结束**\n\n");
+        }
+      });
+    }
 
     // 初始化产物管理器
     this.artifactManager = new ArtifactManager();
@@ -251,11 +318,30 @@ export class AICOSApp {
         this.terminal = new ProcessTerminal();
         this.tui = new TUI(this.terminal, true); // showHardwareCursor=true
 
+        // ★ 初始化流式内容：欢迎信息
+        this.streamContent = [
+          "# AI Company OS v0.1.0",
+          "",
+          "✏️ 在下方输入框输入任务，按 Enter 提交",
+          "",
+          "命令:",
+          "- `/type seed` → 小红书风格",
+          "- `/type article` → 公众号长文",
+          "- `/type newsletter` → Newsletter",
+          "- `q` → 退出",
+          "",
+          "---",
+          "",
+        ].join("\n");
+
         // 构建初始组件树
         this.rebuildLayout();
 
         // 启动 TUI 渲染循环（pi-tui 自主管理差分渲染 + 输入分发）
         this.tui.start();
+
+        // ★ 拦截 console.log → 追加到流式内容区（而非破坏 TUI 渲染）
+        this.interceptConsoleToStream();
 
         this.addLog("info", "app", "✅ pi-tui TUI 已启动（差分渲染模式）");
       } catch (e) {
@@ -272,11 +358,45 @@ export class AICOSApp {
       this.showContentTypeMenu();
       console.log("\n输入任务描述开始，或输入 'q' 退出。\n");
     }
+
+    // ★ 全局错误处理：防止未捕获异常导致 TUI 退出
+    // ★★★ 绝不能调用 appendStream()！如果 appendStream 本身是崩溃原因，会导致递归崩溃
+    process.on("uncaughtException", (err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      // 降级到原始 console（在 interceptConsoleToStream 之前保存的引用）
+      if (this._originalConsoleLog) {
+        this._originalConsoleLog("\n⚠️ 未捕获异常:", msg, "\n");
+      }
+      // 不退出进程，让 TUI 继续运行
+    });
+
+    process.on("unhandledRejection", (reason) => {
+      const msg = reason instanceof Error ? reason.message : String(reason);
+      if (this._originalConsoleLog) {
+        this._originalConsoleLog("\n⚠️ 未处理的 Promise 拒绝:", msg, "\n");
+      }
+      // 不退出进程，让 TUI 继续运行
+    });
   }
 
   /**
-   * 重建整个 TUI 组件树
-   * 在状态变化时调用，重新构建所有子组件
+   * 重建整个 TUI 组件树（Claude Code 风格：上方流式 + 下方输入框）
+   *
+   * 布局结构：
+   * ┌──────────────────────────────────────┐
+   * │ Header: 状态栏                        │
+   * ├──────────────────────────────────────┤
+   * │                                      │
+   * │  流式内容区 (Markdown)                │  ← 70%
+   * │  - Writer 产出                       │
+   * │  - Critic 评估                       │
+   * │  - 工具调用过程                       │
+   * │  - 目标完成度进度                     │
+   * │                                      │
+   * ├──────────────────────────────────────┤
+   * │ > 输入框 (Input)                     │  ← 底部固定
+   * │ 状态提示 + 快捷键                     │
+   * └──────────────────────────────────────┘
    */
   private rebuildLayout(): void {
     if (!this.tui) return;
@@ -284,11 +404,89 @@ export class AICOSApp {
     // 清空旧子组件
     this.tui.clear();
 
-    // 构建新布局：Header → Main → Sidebar → Footer
-    this.tui.addChild(this.buildHeaderComponent());
-    this.tui.addChild(this.buildMainComponent());
-    this.tui.addChild(this.buildSidebarComponent());
-    this.tui.addChild(this.buildFooterComponent());
+    // ★ 整个 TUI 只有两个组件：Markdown 流式区 + Input 输入框
+    // Header 和 StatusBar 信息合并到 Markdown 内容中
+
+    // 1. 流式内容区（Markdown 组件，动态 setText 更新）
+    //    包含：Header 状态 + 拷问/规划/执行内容 + StatusBar 提示
+    this.streamMarkdown = new Markdown(this.streamContent, 1, 0, {
+      heading: (t) => `\x1b[1;36m${t}\x1b[0m`,
+      link: (t) => `\x1b[4;34m${t}\x1b[0m`,
+      linkUrl: (t) => `\x1b[2;34m${t}\x1b[0m`,
+      code: (t) => `\x1b[33m${t}\x1b[0m`,
+      codeBlock: (t) => `\x1b[33m${t}\x1b[0m`,
+      codeBlockBorder: (t) => `\x1b[90m${t}\x1b[0m`,
+      quote: (t) => `\x1b[36m${t}\x1b[0m`,
+      quoteBorder: (t) => `\x1b[90m${t}\x1b[0m`,
+      hr: (t) => `\x1b[90m${t}\x1b[0m`,
+      listBullet: (t) => `\x1b[90m${t}\x1b[0m`,
+      bold: (t) => `\x1b[1m${t}\x1b[0m`,
+      italic: (t) => `\x1b[3m${t}\x1b[0m`,
+      strikethrough: (t) => `\x1b[9m${t}\x1b[0m`,
+      underline: (t) => `\x1b[4m${t}\x1b[0m`,
+    });
+    this.tui.addChild(this.streamMarkdown);
+
+    // 2. 底部输入框（Input 组件，固定焦点）
+    this.inputComponent = new Input();
+    this.inputComponent.onSubmit = (value: string) => {
+      // ★ 关键：onSubmit 在 pi-tui 的 handleInput 链中被调用，
+      // 任何异常都会冒泡到 stdin data handler 导致进程崩溃。
+      // 必须用 try-catch 包裹，并用 .catch() 捕获 async rejection。
+      try {
+        const result = this.handleInput(value);
+        // handleInput 是 async 的，必须捕获 rejection
+        if (result && typeof result === "object" && "catch" in result) {
+          (result as Promise<void>).catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.appendStream("\n⚠️ 输入处理错误: " + msg + "\n\n");
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.appendStream("\n⚠️ 输入处理错误: " + msg + "\n\n");
+      }
+    };
+    this.inputComponent.onEscape = () => {
+      // ★ ESC 跳过当前拷问问题（如果正在拷问阶段）
+      try {
+        if (this.activeInterrogateModal && this.interrogateEngine) {
+          this.handleInterrogateInput("__SKIP__");
+        }
+      } catch {
+        // 兜底：直接 resolve interrogate
+        this.resolveInterrogate();
+      }
+    };
+    this.tui.addChild(this.inputComponent);
+
+    // 设置焦点到输入框
+    this.tui.setFocus(this.inputComponent);
+  }
+
+  /** 构建 Header 文本 */
+  private buildHeaderText(): string {
+    const stateInfo = getStateDisplay(this.state.loopState);
+    const taskIdStr = this.state.currentTaskId ? ` | Task: ${this.state.currentTaskId.slice(0, 8)}` : "";
+    return ` AI Company OS v0.1.0 [${stateInfo.label}]${taskIdStr} `;
+  }
+
+  /** 构建 StatusBar 文本 */
+  private buildStatusBarText(): string {
+    const stateInfo = getStateDisplay(this.state.loopState);
+    const lockIcon = this.inputLocked ? "🔒" : "✏️";
+    return this.inputLocked
+      ? ` ${lockIcon} ${stateInfo.label} · Esc: 跳过 · q: 退出 `
+      : ` ${lockIcon} Enter: 提交 · /type: 切换类型 · q: 退出 `;
+  }
+
+  /** ★ 增量更新 Header 和 StatusBar（更新流式内容的首行和末行） */
+  private updateHeaderContent(): void {
+    // Header/StatusBar 信息已在 appendStream 中更新，无需额外操作
+  }
+
+  private updateStatusBarContent(): void {
+    // 同上
   }
 
   /**
@@ -298,8 +496,10 @@ export class AICOSApp {
    */
   render(): void {
     if (this.tui) {
-      // ★ pi-tui 模式：重建组件树（pi-tui 自动差分渲染）
-      this.rebuildLayout();
+      // ★ pi-tui 模式：增量更新（不重建组件树！）
+      // 只更新 Header 和 StatusBar 的文本内容，不销毁 Input 组件
+      this.updateHeaderContent();
+      this.updateStatusBarContent();
       this.tui.requestRender();
     } else {
       // 回退模式：手写 ASCII art
@@ -358,12 +558,38 @@ export class AICOSApp {
         return box;
       }
       default: {
-        // loop 模式
-        const loopData = buildLoopVisualizationData({
-          currentState: this.state.loopState,
-        });
+        // loop 模式 — IDLE 时显示输入提示，其他状态显示循环图+进度
         const box = new Box(1, 1);
-        box.addChild(new Text(formatLoopASCII(loopData), 1, 1));
+
+        if (this.state.loopState === LoopState.IDLE) {
+          // ★ 任务输入提示（IDLE 状态）
+          const lines = [
+            "",
+            "  ┌──────────────────────────────────────────┐",
+            "  │                                          │",
+            "  │   ✏️  输入你的任务，然后按 Enter 提交       │",
+            "  │                                          │",
+            "  │   示例: 写一篇关于XX的小红书笔记           │",
+            "  │         帮我写一篇公众号文章               │",
+            "  │                                          │",
+            "  │   /type seed     → 小红书风格             │",
+            "  │   /type article  → 公众号长文             │",
+            "  │   /type newsletter→ Newsletter           │",
+            "  │                                          │",
+            "  └──────────────────────────────────────────┘",
+            "",
+          ];
+          box.addChild(new Text(lines.join("\n"), 1, 1));
+        } else {
+          // 非空闲状态：显示循环执行状态图 + 进度信息
+          const loopData = buildLoopVisualizationData({
+            currentState: this.state.loopState,
+          });
+          box.addChild(new Text(formatLoopASCII(loopData), 1, 1));
+          // ★ 附加进度信息（从最新日志提取关键状态）
+          box.addChild(this.buildProgressComponent());
+        }
+
         return box;
       }
     }
@@ -423,6 +649,99 @@ export class AICOSApp {
     }
 
     return new Text("（Modal 渲染中...）", 1, 1);
+  }
+
+  /** ★ 构建执行进度组件（PLANNING/EXECUTING 状态下替代空白 Modal） */
+  private buildProgressComponent(): Component {
+    const state = this.state.loopState;
+    const stateLabel = {
+      [LoopState.INTERROGATING]: "拷问中",
+      [LoopState.PLANNING]: "规划中",
+      [LoopState.EXECUTING]: "执行中",
+      [LoopState.VERIFYING]: "验证中",
+      [LoopState.EVOLVING]: "进化中",
+      [LoopState.DONE]: "完成",
+      [LoopState.IDLE]: "空闲",
+    }[state] ?? state;
+
+    const spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][Date.now() % 10];
+
+    const lines = [
+      "",
+      `  ${spinner} ${stateLabel}...`,
+      "",
+      `  状态: ${state}`,
+      `  任务: ${this.state.currentTaskId ?? "-"}`,
+      "",
+    ];
+
+    return new Text(lines.join("\n"), 1, 1);
+  }
+
+  /** ★ 构建底部状态栏组件（快捷键提示 + 状态信息） */
+  private buildStatusBarComponent(): Component {
+    const stateInfo = getStateDisplay(this.state.loopState);
+    const lockIcon = this.inputLocked ? "🔒" : "✏️";
+    const statusText = this.inputLocked
+      ? ` ${lockIcon} ${stateInfo.label} · Esc: 跳过 · q: 退出 `
+      : ` ${lockIcon} Enter: 提交 · /type: 切换类型 · q: 退出 `;
+    return new Text(statusText, 0, 0);
+  }
+
+  // ============================================================
+  // ★ 流式内容管理（Claude Code 风格）
+  // ============================================================
+
+  /**
+   * 追加流式内容到 Markdown 区域
+   *
+   * 所有 Agent 产出、评估、工具调用、进度信息都通过此方法追加。
+   * 自动触发 TUI 重绘。
+   */
+  private appendStream(content: string): void {
+    try {
+      this.streamContent += content;
+      if (this.streamMarkdown) {
+        this.streamMarkdown.setText(this.streamContent);
+      }
+      this.scheduleRender();
+    } catch {
+      // ★ 静默失败 — appendStream 是最底层渲染方法，绝不能抛出异常
+      // 否则所有 30+ 调用点都会崩溃，包括全局错误处理器（导致递归崩溃）
+      // 降级：写入原始 console（如果可用）
+      if (this._originalConsoleLog) {
+        try { this._originalConsoleLog("[appendStream fallback]", content); } catch { /* 彻底放弃 */ }
+      }
+    }
+  }
+
+  /**
+   * 清空流式内容区
+   */
+  private clearStream(): void {
+    this.streamContent = "";
+    if (this.streamMarkdown) {
+      this.streamMarkdown.setText("");
+    }
+  }
+
+  /**
+   * ★ 锁定/解锁输入框
+   *
+   * 执行中锁定输入框，完成后解锁。
+   * ★ 每次解锁后重新聚焦 Input 组件，确保键盘事件正确分发。
+   */
+  private setInputLocked(locked: boolean): void {
+    this.inputLocked = locked;
+    if (this.inputComponent) {
+      if (locked) {
+        this.inputComponent.setValue("");
+      }
+      // ★ 重新聚焦 Input 组件（确保键盘事件正确分发）
+      if (this.tui) {
+        this.tui.setFocus(this.inputComponent);
+      }
+    }
   }
 
   /** 构建侧边栏组件: MCP 状态 + 工具列表 */
@@ -496,7 +815,27 @@ export class AICOSApp {
   async handleInput(input: string): Promise<void> {
     const trimmed = input.trim();
 
-    // 全局快捷键
+    // ★ 清空 Input 组件的值（为下一次输入做准备）
+    if (this.inputComponent) {
+      this.inputComponent.setValue("");
+    }
+
+    // ★★★ 优先级 1：拷问阶段输入（必须在 q/inputLocked 之前判断！）
+    // 否则用户在拷问阶段输入 q 会被全局快捷键拦截导致 TUI 退出
+    if (this.state.activeModal === "interrogate" && this.activeInterrogateModal) {
+      await this.handleInterrogateInput(trimmed);
+      return;
+    }
+
+    // ★★★ 优先级 2：执行中锁定（只接受 q 退出）
+    if (this.inputLocked) {
+      if (trimmed.toLowerCase() === "q") {
+        this.quit();
+      }
+      return;
+    }
+
+    // ★★★ 优先级 3：全局快捷键（仅在非拷问、非锁定时生效）
     if (trimmed.toLowerCase() === "q") {
       this.quit();
       return;
@@ -506,6 +845,7 @@ export class AICOSApp {
     const typeMatch = trimmed.match(/^\/(?:type|格式)\s+(\S+)$/i);
     if (typeMatch) {
       this.selectContentType(typeMatch[1] as ContentType);
+      this.appendStream(`\n> 已选择内容类型: **${typeMatch[1]}**\n\n`);
       return;
     }
 
@@ -515,35 +855,44 @@ export class AICOSApp {
       return;
     }
 
-    // 如果有活跃的 Modal，优先处理 Modal 输入
-    if (this.state.activeModal === "interrogate" && this.activeInterrogateModal) {
-      await this.handleInterrogateInput(trimmed);
-      return;
-    }
-
     // 默认：作为新任务提交
     await this.submitTask(trimmed);
   }
 
   /**
-   * 提交新任务
-   * 触发完整的 Loop 执行流程
+   * 提交新任务（Claude Code 风格：流式显示执行过程）
+   *
+   * ★ 关键：executeLoop() 在后台运行（不 await），
+   * 让 TUI 渲染循环继续工作，这样 appendStream() 的内容才能实时显示。
    */
   async submitTask(input: string): Promise<void> {
     if (!input || input.length === 0) {
-      this.addLog("warn", "app", "请输入有效的任务描述");
       return;
     }
 
     // 生成任务 ID
     const taskId = generateTaskId();
     this.state.currentTaskId = taskId;
-    this.addLog("info", "task", `收到新任务: ${input.slice(0, 50)}...`);
+    this.state.currentTaskInput = input;
 
-    // 执行完整 Loop
-    await this.executeLoop(input);
+    // ★ 流式输出：显示用户输入
+    this.appendStream(`\n## 任务\n\n> ${input}\n\n`);
 
-    this.render();
+    // ★ 锁定输入框
+    this.setInputLocked(true);
+
+    // ★ 在后台运行 executeLoop（不 await），让 TUI 渲染循环继续工作
+    this.executeLoop(input)
+      .then(() => {
+        // ★ 解锁输入框
+        this.setInputLocked(false);
+        this.appendStream("\n---\n\n✅ 任务完成。输入新任务继续，或按 `q` 退出。\n\n");
+      })
+      .catch((err) => {
+        this.setInputLocked(false);
+        const msg = err instanceof Error ? err.message : String(err);
+        this.appendStream("\n❌ 任务失败: " + msg + "\n\n输入新任务继续，或按 q 退出。\n\n");
+      });
   }
 
   /**
@@ -575,21 +924,30 @@ export class AICOSApp {
 
     // 监听状态变更事件
     this.stateMachine.eventEmitter.on("stateChange", (event) => {
-      this.state.loopState = event.nextState;
-      this.addLog(
-        "info",
-        "loop",
-        `状态变更: ${event.previousState} → ${event.nextState}${event.reason ? ` (${event.reason})` : ""}`
-      );
-      this.render();
+      try {
+        this.state.loopState = event.nextState;
+        this.addLog(
+          "info",
+          "loop",
+          `状态变更: ${event.previousState} → ${event.nextState}${event.reason ? ` (${event.reason})` : ""}`
+        );
+        this.render();
+      } catch (err) {
+        // ★ 状态变更回调异常不能中断 executeLoop
+        if (this._originalConsoleLog) {
+          this._originalConsoleLog("[stateChange error]", err);
+        }
+      }
     });
 
     try {
       // ===== Step 1: INTERROGATING =====
+      this.appendStream("### 🔍 拷问阶段\n\n");
       await this.stateMachine.transition(LoopState.INTERROGATING, "开始拷问");
       await this.runInterrogationPhase(taskInput);
 
       // ===== Step 2: PLANNING =====
+      this.appendStream("### 📋 规划阶段\n\n");
       await this.stateMachine.transition(LoopState.PLANNING, "开始规划");
       await this.runPlanningPhase(taskInput);
 
@@ -598,15 +956,16 @@ export class AICOSApp {
       let maxRetries = 3;
 
       while (!verified && context.retryCount < maxRetries) {
+        this.appendStream(`### ⚡ 执行阶段 (尝试 ${context.retryCount + 1})\n\n`);
         await this.stateMachine.transition(LoopState.EXECUTING, `执行计划 (尝试 ${context.retryCount + 1})`);
         await this.runExecutionPhase();
 
+        this.appendStream("### ✅ 验证阶段\n\n");
         await this.stateMachine.transition(LoopState.VERIFYING, "验证结果");
         verified = await this.runVerificationPhase();
 
         if (!verified && context.retryCount < maxRetries - 1) {
-          // Replan
-          this.addLog("warn", "loop", "验证失败，触发 Replan...");
+          this.appendStream("### 🔄 Replan\n\n");
           if (this.rollbackManager) {
             await this.rollbackManager.rollback(context.taskId);
           }
@@ -617,11 +976,12 @@ export class AICOSApp {
       }
 
       if (!verified) {
-        this.addLog("error", "loop", "达到重试上限，任务终止");
+        this.appendStream("\n❌ 达到重试上限，任务终止。\n\n");
         return;
       }
 
       // ===== Step 5: EVOLVING =====
+      this.appendStream("### 🧬 进化阶段\n\n");
       await this.stateMachine.transition(LoopState.EVOLVING, "开始进化");
       await this.runEvolutionPhase();
 
@@ -632,6 +992,9 @@ export class AICOSApp {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.addLog("error", "loop", `Loop 执行出错: ${message}`);
+      this.appendStream("\n❌ Loop 执行出错: " + message + "\n\n");
+      // ★ 必须重新抛出，让 submitTask 的 .catch() 正确处理（解锁输入框、显示错误）
+      throw error;
     }
   }
 
@@ -687,16 +1050,28 @@ export class AICOSApp {
 
       // 选择回调：自动选中并应用
       selectList.onSelect = (item) => {
-        this.selectContentType(item.value);
-        if (this.tui) {
-          this.tui.hideOverlay(); // 关闭选择器
+        try {
+          this.selectContentType(item.value);
+          if (this.tui) {
+            this.tui.hideOverlay(); // 关闭选择器
+          }
+        } catch (err) {
+          if (this._originalConsoleLog) {
+            this._originalConsoleLog("[onSelect error]", err);
+          }
         }
       };
 
       // ESC 取消
       selectList.onCancel = () => {
-        if (this.tui) {
-          this.tui.hideOverlay();
+        try {
+          if (this.tui) {
+            this.tui.hideOverlay();
+          }
+        } catch (err) {
+          if (this._originalConsoleLog) {
+            this._originalConsoleLog("[onCancel error]", err);
+          }
         }
       };
 
@@ -808,6 +1183,51 @@ export class AICOSApp {
     }
   }
 
+  // ============================================================
+  // ★ Console 拦截（TUI 模式下防止日志泄漏）
+  // ============================================================
+
+  /** 保存原始 console 方法 */
+  private _originalConsoleLog: typeof console.log | null = null;
+  private _originalConsoleWarn: typeof console.warn | null = null;
+  private _originalConsoleError: typeof console.error | null = null;
+
+  /**
+   * ★ 拦截 console.log/warn/error → 静默丢弃
+   *
+   * TUI 模式下 console.log 直接输出会破坏差分渲染。
+   * 关键日志已通过回调机制输出到流式内容区，console.log 全部静默。
+   */
+  private interceptConsoleToStream(): void {
+    this._originalConsoleLog = console.log;
+    this._originalConsoleWarn = console.warn;
+    this._originalConsoleError = console.error;
+
+    // TUI 模式下：所有 console.log 静默丢弃
+    // 关键日志已通过 onIterationStart/onWriterOutput/onCriticResult 回调输出
+    console.log = function(..._args: unknown[]): void {};
+    console.warn = function(..._args: unknown[]): void {};
+    console.error = function(..._args: unknown[]): void {};
+  }
+
+  private interceptConsole(): void {
+    this.interceptConsoleToStream();
+  }
+
+  /**
+   * ★ 恢复原始 console 方法
+   *
+   * 在退出 TUI 模式前调用，确保后续输出正常。
+   */
+  private restoreConsole(): void {
+    if (this._originalConsoleLog) console.log = this._originalConsoleLog;
+    if (this._originalConsoleWarn) console.warn = this._originalConsoleWarn;
+    if (this._originalConsoleError) console.error = this._originalConsoleError;
+    this._originalConsoleLog = null;
+    this._originalConsoleWarn = null;
+    this._originalConsoleError = null;
+  }
+
   /**
    * 退出应用
    */
@@ -815,6 +1235,9 @@ export class AICOSApp {
     this.addLog("info", "app", "正在退出...");
     this.running = false;
     this.closeModal();
+
+    // ★ 恢复 console（在 stop TUI 之前，确保再见消息能正常输出）
+    this.restoreConsole();
 
     if (this.tui) {
       try {
@@ -831,96 +1254,169 @@ export class AICOSApp {
   // ==================== 私有方法 ====================
 
   /**
-   * 运行拷问阶段
+   * 运行拷问阶段（Claude Code 风格：对话式，问题流式输出到上方）
+   *
+   * ★ 关键：返回 Promise，等待用户完成所有回答后才 resolve。
+   * 这样 executeLoop() 才会暂停在拷问阶段，不会直接跳到规划。
    */
   private async runInterrogationPhase(taskInput: string): Promise<void> {
     if (!this.interrogateEngine) return;
-
-    this.addLog("info", "interrogate", "正在生成澄清问题...");
 
     const session = await this.interrogateEngine.startSession(
       this.state.currentTaskId!,
       taskInput
     );
 
-    // 弹出拷问 Modal
-    this.showInterrogateModal(session);
+    // ★ 对话式拷问：将问题流式输出到上方区域
+    this.state.activeModal = "interrogate";
+    this.activeInterrogateModal = new InterrogateModal(session, this.interrogateEngine);
 
-    // 注意：实际交互在 handleInterrogateInput 中完成
-    // 这里等待 Modal 关闭（由外部事件驱动）
+    // 显示第一个问题
+    this.showNextInterrogateQuestion();
+
+    // ★ 解锁输入框让用户回答
+    this.setInputLocked(false);
+
+    // ★ 核心：返回 Promise，等待 handleInterrogateInput 中调用 resolve
+    return new Promise<void>((resolve) => {
+      this.interrogateResolve = resolve;
+    });
   }
 
   /**
-   * 处理拷问 Modal 的用户输入
+   * 显示下一个拷问问题到流式内容区
+   */
+  private showNextInterrogateQuestion(): void {
+    if (!this.activeInterrogateModal) return;
+    const renderResult = this.activeInterrogateModal.render();
+    if (renderResult.type === "question" && renderResult.card) {
+      const card = renderResult.card;
+      this.appendStream(`\n**${card.dimensionEmoji} ${card.dimensionLabel}**\n\n`);
+      this.appendStream(`${card.promptText}\n\n`);
+      if (card.hints.length > 0) {
+        this.appendStream(`提示: ${card.hints.slice(0, 3).join(" / ")}\n\n`);
+      }
+      this.appendStream("*在下方输入框回答，或按 Esc 跳过*\n\n");
+    }
+  }
+
+  /**
+   * 处理拷问对话输入（Claude Code 风格：流式对话）
+   *
+   * ★ 拷问完成时调用 this.interrogateResolve() 解除 Promise 等待，
+   * 让 executeLoop() 继续执行后续阶段。
    */
   private async handleInterrogateInput(input: string): Promise<void> {
-    if (!this.activeInterrogateModal || !this.interrogateEngine) return;
+    try {
+      if (!this.activeInterrogateModal || !this.interrogateEngine) {
+        // ★★★ 如果 interrogateResolve 存在，必须 resolve，否则 executeLoop 永久挂起
+        this.resolveInterrogate();
+        return;
+      }
 
-    const modal = this.activeInterrogateModal;
-    const action = modal.handleInput(input);
+      const modal = this.activeInterrogateModal;
 
-    switch (action.type) {
-      case "SUBMIT": {
-        // 提交回答
-        const session = await this.interrogateEngine.submitAnswer(
-          modal.currentSession,
-          action.value
-        );
-        modal.updateSession(session);
+      // ★ 流式输出用户回答
+      this.appendStream(`> ${input}\n\n`);
 
-        // 检查本轮是否完成
-        if (this.interrogateEngine.isRoundComplete(session)) {
-          // 进入摘要模式或继续下一轮
-          const shouldContinue = await this.interrogateEngine.shouldContinue(session);
-          if (shouldContinue) {
-            const nextSession = await this.interrogateEngine.generateFollowUpQuestions(session);
-            modal.updateSession(nextSession);
+      const action = modal.handleInput(input);
+
+      switch (action.type) {
+        case "SUBMIT": {
+          const session = await this.interrogateEngine.submitAnswer(
+            modal.currentSession,
+            action.value
+          );
+          modal.updateSession(session);
+
+          if (this.interrogateEngine.isRoundComplete(session)) {
+            const shouldContinue = await this.interrogateEngine.shouldContinue(session);
+            if (shouldContinue) {
+              const nextSession = await this.interrogateEngine.generateFollowUpQuestions(session);
+              modal.updateSession(nextSession);
+              this.showNextInterrogateQuestion();
+            } else {
+              // ★ 拷问完成
+              const finalContext = this.interrogateEngine.finalize(session);
+              this.cachedInterrogationResults = { ...finalContext };
+              this.appendStream(`\n✅ 拷问完成，收集到 ${Object.keys(finalContext).length} 个上下文维度\n\n`);
+              this.closeModal();
+              this.setInputLocked(true);
+              this.resolveInterrogate();
+            }
           } else {
-            // 完成拷问
-          const finalContext = this.interrogateEngine.finalize(session);
-          this.cachedInterrogationResults = { ...finalContext };
-          this.addLog("info", "interrogate", `拷问完成，收集到 ${Object.keys(finalContext).length} 个上下文维度`);
-          this.closeModal();
+            // ★ 还有下一个问题
+            this.showNextInterrogateQuestion();
           }
+          break;
         }
-        break;
-      }
 
-      case "SKIP": {
-        const session = this.interrogateEngine.skipQuestion(modal.currentSession);
-        modal.updateSession(session);
-        break;
-      }
+        case "SKIP": {
+          this.appendStream("*（已跳过）*\n\n");
+          const session = this.interrogateEngine.skipQuestion(modal.currentSession);
+          modal.updateSession(session);
 
-      case "BACK": {
-        const session = this.interrogateEngine.goBack(modal.currentSession);
-        modal.updateSession(session);
-        break;
-      }
+          // 检查是否还有问题
+          const rr = modal.render();
+          if (rr.type === "question" && rr.card) {
+            this.showNextInterrogateQuestion();
+          } else {
+            // ★ 所有问题已跳过，拷问结束
+            const finalContext = this.interrogateEngine.finalize(session);
+            this.cachedInterrogationResults = { ...finalContext };
+            this.appendStream("\n✅ 拷问跳过完成\n\n");
+            this.closeModal();
+            this.setInputLocked(true);
+            this.resolveInterrogate();
+          }
+          break;
+        }
 
-      case "CONFIRM": {
-        // 摘要确认完成
-        const session = modal.currentSession;
-        const finalContext = this.interrogateEngine.finalize(session);
-        this.cachedInterrogationResults = { ...finalContext };
-        this.addLog("info", "interrogate", `拷问确认完成，收集到 ${Object.keys(finalContext).length} 个上下文维度`);
-        this.closeModal();
-        break;
-      }
+        case "CANCEL": {
+          this.appendStream("*（已取消拷问）*\n\n");
+          this.closeModal();
+          this.setInputLocked(true);
+          this.resolveInterrogate();
+          break;
+        }
 
-      case "CANCEL": {
-        this.addLog("warn", "interrogate", "用户取消了拷问流程");
-        this.closeModal();
-        break;
+        default: {
+          if (action.type === "CONFIRM") {
+            const session = modal.currentSession;
+            const finalContext = this.interrogateEngine.finalize(session);
+            this.cachedInterrogationResults = { ...finalContext };
+            this.appendStream(`\n✅ 拷问确认完成\n\n`);
+            this.closeModal();
+            this.setInputLocked(true);
+            this.resolveInterrogate();
+          }
+          break;
+        }
       }
-
-      case "NAVIGATE_TO": {
-        // 摘要模式下的导航，仅更新高亮位置
-        break;
-      }
+    } catch (err) {
+      // ★★★ 关键兜底：任何异常都必须 resolve interrogateResolve
+      // 否则 executeLoop() 的 Promise 永远不会 resolve，TUI 冻结
+      const msg = err instanceof Error ? err.message : String(err);
+      this.appendStream("\n⚠️ 拷问处理错误: " + msg + " — 自动继续\n\n");
+      this.closeModal();
+      this.setInputLocked(true);
+      this.resolveInterrogate();
     }
+  }
 
-    this.render();
+  /**
+   * ★ 解除拷问阶段 Promise 等待
+   *
+   * 在 handleInterrogateInput 中拷问完成时调用，
+   * 让 executeLoop() 继续执行后续阶段。
+   */
+  private resolveInterrogate(): void {
+    if (this.interrogateResolve) {
+      const resolve = this.interrogateResolve;
+      this.interrogateResolve = null;
+      // 异步 resolve，避免在 handleInput 回调中直接继续 executeLoop
+      setImmediate(() => resolve());
+    }
   }
 
   /**
@@ -929,36 +1425,35 @@ export class AICOSApp {
   private async runPlanningPhase(taskInput: string): Promise<void> {
     if (!this.planEngine) return;
 
-    this.addLog("info", "plan", "正在生成执行计划...");
+    this.appendStream("正在生成执行计划...\n\n");
 
     try {
       const result = await this.planEngine.generatePlan({
         taskInput,
-        // 使用拷问阶段收集的真实结果（如果有）
         interrogationResults: this.cachedInterrogationResults,
         availableAgents: ["writer", "critic", "ui-ux"],
-        // 从 ToolRegistry 获取已注册的工具列表
         availableTools: this.toolRegistry.listAll().map(t => t.name),
       });
 
-      this.addLog("info", "plan", `计划已生成: ${result.plan.steps.length} 个步骤`);
-
-      // v0.2.0: 自动分类任务类型 → 标记 TaskProfile（用于阈值自适应选择）
+      // v0.2.0: 自动分类任务类型
       const taskProfile = this.classifyTaskProfile(taskInput);
       result.plan.taskProfile = taskProfile;
-      this.addLog("info", "plan",
-        `任务类型: ${taskProfile}（阈值将按此档位自适应调整）`
-      );
 
-      // 更新上下文中的计划（通过可变引用）
+      // ★ 流式输出计划摘要
+      this.appendStream(`**计划已生成**: ${result.plan.steps.length} 个步骤 (${taskProfile})\n\n`);
+      for (const step of result.plan.steps) {
+        this.appendStream(`- \`${step.agentType}\` ${step.description.slice(0, 60)}\n`);
+      }
+      this.appendStream("\n\n");
+
+      // 更新上下文中的计划
       if (this.loopContext) {
         this.loopContext.plan = result.plan;
-        // 同时将拷问结果注入上下文，供 Agent 使用
         this.loopContext.interrogationResults = this.cachedInterrogationResults;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.addLog("error", "plan", `计划生成失败: ${message}`);
+      this.appendStream(`\n❌ 计划生成失败: ${message}\n\n`);
       throw error;
     }
   }
@@ -1365,49 +1860,12 @@ export class AICOSApp {
    * 直接渲染到终端（无 TUI 时的回退方案）
    */
   private renderToTerminal(): void {
-    // 清屏（简单实现）
-    console.clear();
-
-    // 顶栏
-    const header = buildHeaderData({
-      currentState: this.state.loopState,
-      taskId: this.state.currentTaskId,
-    });
-    console.log(formatHeaderString(header));
-    console.log("");
-
-    // 主区域
-    switch (this.getMainMode()) {
-      case "modal": {
-        if (this.activeInterrogateModal) {
-          this.renderModalToTerminal();
-        }
-        break;
-      }
-      case "evolution": {
-        const evoData = buildEvolutionPanelData({ phase: "analyzing", progress: 50 });
-        console.log(formatEvolutionString(evoData));
-        break;
-      }
-      default: {
-        const loopData = buildLoopVisualizationData({
-          currentState: this.state.loopState,
-        });
-        console.log(formatLoopASCII(loopData));
-        break;
-      }
-    }
-
-    console.log("");
-
-    // 侧边栏
-    const sidebar = buildSidebarData();
-    console.log(formatSidebarString(sidebar));
-    console.log("");
-
-    // 底栏
-    const footer = buildFooterData({ logs: this.state.logs });
-    console.log(formatFooterString(footer));
+    // ★ Claude Code 风格：流式内容直接输出到终端
+    // 非TUI模式下，streamContent 已通过 console.log 拦截输出到终端
+    // 这里只输出状态栏信息
+    const stateInfo = getStateDisplay(this.state.loopState);
+    const lockIcon = this.inputLocked ? "🔒" : "✏️";
+    console.log(`\n${lockIcon} [${stateInfo.label}] Enter: 提交 | /type: 切换类型 | q: 退出\n`);
   }
 
   /**
@@ -1494,6 +1952,28 @@ export class AICOSApp {
     if (this.state.logs.length > 200) {
       this.state.logs = this.state.logs.slice(-100);
     }
+
+    // ★ TUI 模式下：日志变化时自动触发重绘（实时更新 Footer）
+    // 使用节流避免高频日志导致过度渲染
+    if (this.tui && this.running) {
+      this.scheduleRender();
+    }
+  }
+
+  /** ★ 渲染节流：最多每 200ms 重绘一次 */
+  private _renderTimer: ReturnType<typeof setTimeout> | null = null;
+  private scheduleRender(): void {
+    if (this._renderTimer) return; // 已有待执行的渲染
+    this._renderTimer = setTimeout(() => {
+      this._renderTimer = null;
+      if (this.tui && this.running) {
+        // ★ 增量更新：只更新 Markdown 内容 + 状态栏，不重建整个组件树
+        if (this.streamMarkdown) {
+          this.streamMarkdown.setText(this.streamContent);
+        }
+        this.tui.requestRender();
+      }
+    }, 200);
   }
 
   /**

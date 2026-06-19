@@ -166,12 +166,26 @@
       },
       "entryId": "f563b03f-213c-42d3-990b-2fb8fa3bbd99",
       "timestamp": "2026-06-19T09:35:10.612Z"
+    },
+    {
+      "taskType": "content-generation",
+      "pattern": "task-complete-61-artifacts",
+      "type": "success",
+      "lesson": "任务: unknown\n产出: 61 个 Artifact\n完成时间: 2026-06-19T10:38:53.074Z\n---\n2026-06-19T11:09:48.984Z 补充: 任务: unknown\n产出: 61 个 Artifact\n完成时间: 2026-06-19T11:09:48.970Z\n---\n2026-06-19T11:55:07.579Z 补充: 任务: 帮我写一篇 大模型小红书文章\n产出: 61 个 Artifact\n完成时间: 2026-06-19T11:55:07.566Z",
+      "capabilityDelta": {
+        "addedCapabilities": [
+          "content-generation",
+          "loop-execution"
+        ]
+      },
+      "entryId": "b2f46482-2992-47bd-9091-ae1faa1fa067",
+      "timestamp": "2026-06-19T11:55:07.579Z"
     }
   ],
-  "totalTasksCompleted": 26,
-  "totalSuccessRate": 0.38461538461538464,
+  "totalTasksCompleted": 29,
+  "totalSuccessRate": 0.3793103448275862,
   "knownLimitations": [],
-  "lastUpdated": "2026-06-19T09:35:10.622Z",
+  "lastUpdated": "2026-06-19T11:55:07.582Z",
   "capabilities": [
     {
       "name": "blog-writing",
@@ -189,16 +203,16 @@
     },
     {
       "name": "content-generation",
-      "proficiency": 82,
-      "lastUsed": "2026-06-19T09:35:10.621Z",
-      "successCount": 8,
+      "proficiency": 100,
+      "lastUsed": "2026-06-19T11:55:07.581Z",
+      "successCount": 14,
       "failureCount": 0
     },
     {
       "name": "loop-execution",
-      "proficiency": 75,
-      "lastUsed": "2026-06-19T09:35:10.622Z",
-      "successCount": 8,
+      "proficiency": 100,
+      "lastUsed": "2026-06-19T11:55:07.582Z",
+      "successCount": 14,
       "failureCount": 0
     }
   ],

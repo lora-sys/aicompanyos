@@ -2,6 +2,8 @@ import { ExecutionOrchestrator } from "../orchestrator/engine.js";
 import { LoopModule, DEFAULT_WRITING_CRITERIA, } from "../loop-module/index.js";
 import { GoalTemplateRegistry } from "../completion-guard/goal-templates.js";
 import { getThresholdsForProfile } from "../config/thresholds.js";
+// ★ pi-agent-core 集成
+import { PiAgentLoopEngine, } from "../pi-agent-adapter.js";
 const DEFAULT_CONFIG = {
     maxRewrites: 3,
     qualityThreshold: 85,
@@ -35,6 +37,10 @@ export class LoopHarness {
     currentProfile;
     // 动态 Few-shot 样例（从 Memory 历史数据提取，由 CLI 层注入）
     dynamicExamples;
+    // ★ pi-agent-core 引擎实例
+    piAgentEngine = null;
+    // ★ pi-agent-core 事件转发回调（由 CLI/TUI 层设置）
+    piEventForwarder = null;
     constructor(toolRegistry, llmProvider, config) {
         this.toolRegistry = toolRegistry;
         this.llmProvider = llmProvider;
@@ -45,10 +51,45 @@ export class LoopHarness {
             console.log(`[LoopHarness] 部门配置已注入: ${this.config.departmentConfig.departmentName} ` +
                 `(${this.config.departmentConfig.contentType})`);
         }
+        // ★ pi-agent-core 模式日志
+        if (this.config.usePiAgentCore) {
+            console.log(`[LoopHarness] ★ pi-agent-core 模式已启用 (v0.79.3) — 使用 PiAgentLoopEngine 替代 LoopModule`);
+        }
     }
     /** 获取当前配置（只读） */
     getConfig() {
         return this.config;
+    }
+    /**
+     * ★ 获取 pi-agent-core 引擎实例（用于 CLI/TUI 事件订阅）
+     *
+     * 仅在 usePiAgentCore=true 时有值。
+     * 可用于订阅 AgentEvent（agent_start/turn_end/tool_execution_* 等）并转发到 TUI 渲染层。
+     */
+    getPiAgentEngine() {
+        return this.piAgentEngine;
+    }
+    /**
+     * ★ 设置 pi-agent-core 事件转发回调
+     *
+     * CLI/TUI 层调用此方法注册事件监听器。
+     * 当 PiAgentLoopEngine 产生 AgentEvent 时，自动转发到此回调。
+     *
+     * @example
+     * ```ts
+     * loopHarness.setPiEventForwarder((event) => {
+     *   if (event.type === "turn_end") {
+     *     tui.renderIteration(event.message);
+     *   }
+     * });
+     * ```
+     */
+    setPiEventForwarder(forwarder) {
+        this.piEventForwarder = forwarder;
+        // 如果引擎已存在，立即连接
+        if (this.piAgentEngine) {
+            this.piAgentEngine.onEvent(forwarder);
+        }
     }
     /**
      * 注册 Agent 工厂
@@ -334,21 +375,27 @@ export class LoopHarness {
     // LoopModule 主路径
     // ============================================================
     /**
-     * 使用 LoopModule 执行 Writer → Critic 反馈循环
+     * 使用 LoopModule 或 PiAgentLoopEngine 执行 Writer → Critic 反馈循环
      *
      * 流程：
-     * 1. 创建/复用 LoopModule 实例
-     * 2. 调用 loopModule.run(step) （含 SimpleEvolutionAgent 战略决策）
-     * 3. 将 LoopModuleResult 转换为 StepLoopResult 格式
+     * 1. 检查 usePiAgentCore 配置标志
+     * 2. 若启用 → 使用 PiAgentLoopEngine（pi-agent-core 驱动）
+     * 3. 否则 → 使用 LoopModule（原有手搓引擎，向后兼容）
+     * 4. 将结果统一转换为 StepLoopResult 格式
      */
-    async executeWithLoopModule(writerStep, _context, _previousOutputs, _agentContext) {
+    async executeWithLoopModule(writerStep, context, previousOutputs, agentContext) {
         const stepStartTime = Date.now();
-        console.log(`[LoopHarness] Step "${writerStep.stepId}" 使用 LoopModule 执行`);
-        // 获取或创建 LoopModule
+        // ★ 路由决策：pi-agent-core vs 原有 LoopModule
+        if (this.config.usePiAgentCore) {
+            console.log(`[LoopHarness] Step "${writerStep.stepId}" 使用 ★ PiAgentLoopEngine 执行 (pi-agent-core)`);
+            const piEngine = this.getOrCreatePiAgentEngine(writerStep);
+            const piResult = await piEngine.run(writerStep, writerStep.description);
+            return this.convertPiResultToStepLoopResult(piResult, writerStep.stepId, stepStartTime);
+        }
+        // 默认：使用原有 LoopModule
+        console.log(`[LoopHarness] Step "${writerStep.stepId}" 使用 LoopModule 执行 (legacy)`);
         const loopModule = this.getOrCreateLoopModule(writerStep);
-        // 执行循环（含 Evolution 决策）
         const moduleResult = await loopModule.run(writerStep);
-        // 转换结果格式
         return this.convertToStepLoopResult(moduleResult, writerStep.stepId, stepStartTime);
     }
     /**
@@ -421,6 +468,149 @@ export class LoopHarness {
             finalOutput,
             finalScore: moduleResult.finalScore,
             passed: moduleResult.passed,
+            totalDurationMs: Date.now() - stepStartTime,
+        };
+    }
+    // ============================================================
+    // ★ PiAgentLoopEngine 路径 (pi-agent-core)
+    // ============================================================
+    /**
+     * 延迟创建/获取 PiAgentLoopEngine 实例
+     *
+     * 复用已注册的 writer/critic 工厂，
+     * 将 IGeneratorAgent/IEvaluatorAgent 适配为 IPiWriterAgent/IPiCriticAgent 接口。
+     */
+    getOrCreatePiAgentEngine(step) {
+        if (this.piAgentEngine) {
+            return this.piAgentEngine;
+        }
+        if (!this.writerFactory || !this.criticFactory) {
+            throw new Error("PiAgentLoopEngine: 未注册 writer 或 critic agent。请先调用 registerAgent()");
+        }
+        const ctx = {
+            taskId: step.stepId,
+            taskInput: step.description,
+            tools: this.toolRegistry,
+            llmProvider: this.llmProvider,
+        };
+        const writer = this.writerFactory(ctx);
+        const critic = this.criticFactory(ctx);
+        // 适配器包装：IGeneratorAgent → IPiWriterAgent（接口兼容，直接赋值）
+        const piWriter = {
+            generate: (plan, feedback) => writer.generate(plan, feedback),
+        };
+        // 适配器包装：IEvaluatorAgent → IPiCriticAgent（接口兼容）
+        const piCritic = {
+            evaluate: (output, criteria, originalTask) => critic.evaluate(output, criteria, originalTask),
+        };
+        this.piAgentEngine = new PiAgentLoopEngine({
+            writer: piWriter,
+            critic: piCritic,
+            criteria: this.buildProfileAwareCriteria(),
+            config: {
+                maxIterations: this.config.maxRewrites + 1,
+                enableDegradationGuard: this.config.enableDegradationGuard,
+                stagnationThreshold: 1,
+                departmentConfig: this.config.departmentConfig,
+                // CompletionGuard 集成（与 LoopModule 路径一致）
+                enableCompletionGuard: true,
+                acceptanceCriteria: this.extractGoalsForStep(step),
+                completionGuardConfig: {
+                    maxEffort: this.config.maxRewrites * 4,
+                    verificationConcurrency: 3,
+                    cacheVerifiedGoals: true,
+                    minQualityScore: this.currentProfile?.evaluatorPass ?? this.criteria?.passThreshold,
+                },
+                llmProviderFn: this.llmProvider
+                    ? (prompt) => this.llmProvider.chat([{ role: "user", content: prompt }])
+                    : undefined,
+                // ★ v0.4.0: 执行进度回调（透传 CLI 层的回调）
+                onIterationStart: (iter) => this.config.onIterationStart?.(iter, step.stepId),
+                onWriterOutput: (content, iter) => this.config.onWriterOutput?.(content, iter),
+                onCriticResult: (score, passed, suggestions, iter) => this.config.onCriticResult?.(score, passed, suggestions, iter),
+                onGoalProgress: (verified, total, reason) => this.config.onGoalProgress?.(verified, total, reason),
+            },
+        });
+        // ★ 连接事件转发器（如果 CLI 层已设置）
+        if (this.piEventForwarder) {
+            this.piAgentEngine.onEvent(this.piEventForwarder);
+            console.log(`[LoopHarness] PiAgentLoopEngine 事件转发器已连接`);
+        }
+        console.log(`[LoopHarness] PiAgentLoopEngine 已创建 (pi-agent-core v0.79.3)`);
+        return this.piAgentEngine;
+    }
+    /**
+     * 将 PiAgentLoopResult 转换为 StepLoopResult 格式
+     *
+     * 与 convertToStepLoopResult() 结构一致，确保下游代码无感知。
+     */
+    convertPiResultToStepLoopResult(piResult, stepId, stepStartTime) {
+        // 转换迭代记录
+        const iterations = piResult.iterations.map((iter) => {
+            const criticOutput = {
+                overallScore: iter.evaluation.totalScore,
+                dimensions: Object.fromEntries(iter.evaluation.dimensionScores.map((ds) => [
+                    ds.dimensionId,
+                    { score: ds.rawScore, comment: ds.comment },
+                ])),
+                passed: iter.evaluation.passed,
+                suggestions: iter.evaluation.suggestions.map((s) => ({
+                    type: s.dimensionId,
+                    severity: s.severity,
+                    description: s.description,
+                    suggestion: s.suggestion,
+                })),
+                reasoning: iter.evaluation.reasoning,
+            };
+            const writerOutput = {
+                stepId,
+                agentType: "writer",
+                success: iter.stopReason !== "error",
+                output: iter.output ?? {},
+                durationMs: iter.durationMs,
+            };
+            // PiAgentLoopEngine stopReason → StepLoopIteration reason 映射
+            const reasonMap = {
+                excellent: "quality_met",
+                passed: "quality_met",
+                max_iterations: "max_rewrites",
+                degradation: "degradation",
+                stagnation_pivot: "stable_plateau",
+                error: "error",
+                goals_verified: "quality_met",
+                goals_blocked: "error",
+            };
+            return {
+                round: iter.iteration,
+                writerOutput,
+                criticOutput,
+                passed: reasonMap[iter.stopReason] ?? "continue",
+                reason: reasonMap[iter.stopReason] ?? "continue",
+                durationMs: iter.durationMs,
+            };
+        });
+        // 构建最终输出
+        const bestOutputRaw = piResult.bestOutput;
+        const hasContent = bestOutputRaw != null &&
+            (typeof bestOutputRaw === "string"
+                ? bestOutputRaw.length > 0
+                : Object.keys(bestOutputRaw).length > 0);
+        const finalOutput = {
+            stepId,
+            agentType: "writer",
+            success: hasContent || piResult.passed,
+            output: bestOutputRaw ?? {},
+            durationMs: piResult.totalDurationMs,
+        };
+        console.log(`[LoopHarness] PiAgentLoopEngine 结果: ${piResult.iterations.length} iterations, ` +
+            `score=${piResult.finalScore}/100, passed=${piResult.passed}` +
+            (piResult._piPowered ? " [pi-powered]" : ""));
+        return {
+            stepId,
+            iterations,
+            finalOutput,
+            finalScore: piResult.finalScore,
+            passed: piResult.passed,
             totalDurationMs: Date.now() - stepStartTime,
         };
     }
