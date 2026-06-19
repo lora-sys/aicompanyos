@@ -1,0 +1,543 @@
+# Instincts generated from https://github.com/lora-sys/aicompanyos
+# Generated: 2026-06-19T10:00:04.102Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: aicompanyos-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: feat, fix, refactor
+
+## Evidence
+
+- 3 commits analyzed
+- Detected conventional commit pattern
+- Examples: feat(loop-engine): add dynamic team architecture, memory回流闭环 and quality gate, fix(loop-engine): integrate HistoryReader into E2E pipeline for Memory read-back loop
+
+---
+id: aicompanyos-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Commit Length
+
+## Action
+
+Write moderate-length commit messages (~64 characters)
+
+## Evidence
+
+- Average commit message length: 64 chars
+- Based on 3 commits
+
+---
+id: aicompanyos-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: aicompanyos-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: aicompanyos-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: aicompanyos-arch-type-based
+trigger: "when adding new code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Arch Type Based
+
+## Action
+
+Place code in the appropriate type folder (components/, services/, utils/, etc.)
+
+## Evidence
+
+- Type-based module organization detected
+- Folders: 
+
+---
+id: aicompanyos-test-framework
+trigger: "when writing tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Test Framework
+
+## Action
+
+Use vitest as the test framework
+
+## Evidence
+
+- Test framework detected: vitest
+- File pattern: *.test.ts
+
+---
+id: aicompanyos-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Test Naming
+
+## Action
+
+Name test files using the pattern: *.test.ts
+
+## Evidence
+
+- File pattern: *.test.ts
+- Consistent across test files
+
+---
+id: aicompanyos-test-types
+trigger: "when planning tests for a feature"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Test Types
+
+## Action
+
+Write unit, integration, e2e tests to match project standards
+
+## Evidence
+
+- Test types detected: unit, integration, e2e
+- Coverage config: no
+
+---
+id: aicompanyos-workflow-add-or-enhance-module-with-tests-and-docs
+trigger: "when doing add or enhance module with tests and docs"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Workflow Add Or Enhance Module With Tests And Docs
+
+## Action
+
+Follow the add-or-enhance-module-with-tests-and-docs workflow:
+1. Create or update multiple source files in a module directory (e.g., src/team/, src/completion-guard/)
+2. Add or update corresponding test files in __tests__/
+3. Update or add documentation files (README.md, MODULE_GUIDE.md, AGENTS.md, UBIQUITOUS_LANGUAGE.md, lessons/, learning-records/)
+4. Update package.json and build outputs (dist/)
+5. Synchronize types and interfaces if needed
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: packages/loop-engine/src/team/*.ts, packages/loop-engine/src/completion-guard/*.ts, packages/loop-engine/src/team/__tests__/*.ts
+
+---
+id: aicompanyos-workflow-fix-or-enhance-pipeline-with-e2e-validation
+trigger: "when doing fix or enhance pipeline with e2e validation"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Workflow Fix Or Enhance Pipeline With E2e Validation
+
+## Action
+
+Follow the fix-or-enhance-pipeline-with-e2e-validation workflow:
+1. Update src/index.ts to export new or missing classes/functions
+2. Update or add E2E test scripts (e.g., e2e-content-production.ts)
+3. Validate changes by running E2E tests and recording results
+4. Document the change in lessons/ and learning-records/
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: packages/loop-engine/src/index.ts, packages/cli/__tests__/e2e-content-production.ts, packages/loop-engine/dist/index.*
+
+---
+id: aicompanyos-workflow-refactor-and-sync-terminology-or-api
+trigger: "when doing refactor and sync terminology or api"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/lora-sys/aicompanyos
+---
+
+# Aicompanyos Workflow Refactor And Sync Terminology Or Api
+
+## Action
+
+Follow the refactor-and-sync-terminology-or-api workflow:
+1. Rename variables, types, or config fields across multiple modules (e.g., totalRounds → totalIterations)
+2. Update CLI scripts and entry points (e.g., bin/aicos, src/app.ts)
+3. Update or fix related logic in implementation and test files
+4. Update documentation to reflect new terminology or API
+5. Update package.json and dist outputs as needed
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: packages/loop-engine/src/**/*.ts, packages/cli/src/app.ts, packages/cli/src/index.ts
+
+---
+id: aicompanyos-instinct-file-naming
+trigger: "When creating or renaming a file"
+confidence: 0.85
+domain: code-style
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct File Naming
+
+## Action
+
+Use camelCase for file names
+
+## Evidence
+
+- Pattern in namingConventions.files
+- Consistent camelCase in src/
+
+---
+id: aicompanyos-instinct-function-naming
+trigger: "When defining a function"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Function Naming
+
+## Action
+
+Use camelCase for function names
+
+## Evidence
+
+- Pattern in namingConventions.functions
+- TypeScript code examples
+
+---
+id: aicompanyos-instinct-class-naming
+trigger: "When defining a class"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Class Naming
+
+## Action
+
+Use PascalCase for class names
+
+## Evidence
+
+- Pattern in namingConventions.classes
+- TypeScript code examples
+
+---
+id: aicompanyos-instinct-constant-naming
+trigger: "When defining a constant"
+confidence: 0.85
+domain: code-style
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Constant Naming
+
+## Action
+
+Use SCREAMING_SNAKE_CASE for constant names
+
+## Evidence
+
+- Pattern in namingConventions.constants
+
+---
+id: aicompanyos-instinct-import-style
+trigger: "When importing modules"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Import Style
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in importStyle
+- TypeScript code samples
+
+---
+id: aicompanyos-instinct-export-style
+trigger: "When exporting modules or functions"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in exportStyle
+- TypeScript code samples
+
+---
+id: aicompanyos-instinct-test-file-pattern
+trigger: "When creating a test file"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Test File Pattern
+
+## Action
+
+Name the file with the pattern *.test.ts
+
+## Evidence
+
+- Pattern in testing.filePattern
+- Examples in __tests__ directories
+
+---
+id: aicompanyos-instinct-test-framework
+trigger: "When writing or running tests"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Test Framework
+
+## Action
+
+Use Vitest as the testing framework
+
+## Evidence
+
+- Pattern in testing.framework
+- vitest config in package.json
+
+---
+id: aicompanyos-instinct-test-type-coverage
+trigger: "When writing tests for a module"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Test Type Coverage
+
+## Action
+
+Include both unit and integration tests, and E2E tests where applicable
+
+## Evidence
+
+- testing.testTypes includes unit, integration, e2e
+- Examples in __tests__ and e2e-content-production.ts
+
+---
+id: aicompanyos-instinct-commit-format
+trigger: "When making a commit"
+confidence: 0.95
+domain: git
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Commit Format
+
+## Action
+
+Use conventional commit prefixes: feat, fix, or refactor
+
+## Evidence
+
+- commits.prefixes
+- Examples: 'feat(loop-engine): ...', 'fix(loop-engine): ...', 'refactor: ...'
+
+---
+id: aicompanyos-instinct-commit-length
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Commit Length
+
+## Action
+
+Keep the commit message concise, around 64 characters on average
+
+## Evidence
+
+- commits.averageLength
+- Examples in commit history
+
+---
+id: aicompanyos-instinct-add-module-workflow
+trigger: "When introducing a new core module or major feature"
+confidence: 0.95
+domain: workflow
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Add Module Workflow
+
+## Action
+
+Implement source files, add/update tests, update documentation, update package.json and build outputs, and synchronize types/interfaces
+
+## Evidence
+
+- Workflow: add-or-enhance-module-with-tests-and-docs
+- Commit sequences and files involved
+
+---
+id: aicompanyos-instinct-fix-pipeline-workflow
+trigger: "When fixing or enhancing a pipeline or integrating a new class/function"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Fix Pipeline Workflow
+
+## Action
+
+Update exports in src/index.ts, add/update E2E test scripts, validate changes with E2E tests, and document in lessons/learning-records
+
+## Evidence
+
+- Workflow: fix-or-enhance-pipeline-with-e2e-validation
+- Commit sequences and files involved
+
+---
+id: aicompanyos-instinct-refactor-api-workflow
+trigger: "When standardizing terminology or refactoring APIs across modules"
+confidence: 0.85
+domain: workflow
+source: repo-analysis
+source_repo: lora-sys/aicompanyos
+---
+
+# Aicompanyos Instinct Refactor Api Workflow
+
+## Action
+
+Rename variables/types/config fields, update CLI scripts and entry points, update logic in implementation and tests, update documentation, and update package.json/dist outputs
+
+## Evidence
+
+- Workflow: refactor-and-sync-terminology-or-api
+- Commit sequences and files involved
+
