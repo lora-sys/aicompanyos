@@ -35,7 +35,7 @@ export { CompletionGuard, VerificationPipeline, CommandExecutor, TestExecutor, L
 export type { VerificationMethod, CommandVerification, TestVerification, LintVerification, BrowserVerification, FileExistenceVerification, ContentMatchVerification, LLMAssertionVerification, EvidenceRecord, EvidenceContent, CommandEvidence, TestEvidence, LintEvidence, BrowserEvidence, FileEvidence, ContentMatchEvidence, LLMEvidence, AcceptanceGoal, GoalStatus, BlockerReason, StopCondition, AllGoalsVerifiedStop, AnyGoalBlockedStop, MaxEffortExceededStop, ErrorStop, CompletionGuardConfig, CompletionCheckResult, CompletionProgress, VerificationContext, VerificationExecutor, } from "./completion-guard/index.js";
 export { CONTENT_TYPES, } from "./department/index.js";
 export type { ContentType, PlatformType, WriterConstraints, CriticDimension, StyleGuide, AgentProfile, DepartmentGoalTemplate, OutputPostProcessor, PlatformAdapterProcessor, MetadataInjector, FormatConverter, QualityCheckerProcessor, OutputPipelineConfig, DimensionWeightOverride, ExtraDimension, QualityGateConfig, DepartmentConfig, ProcessedOutput, } from "./department/index.js";
-export { TaskAnalyzer, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, } from "./team/index.js";
+export { TaskAnalyzer, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, HistoryReader, DEFAULT_HISTORY_READER_CONFIG, } from "./team/index.js";
 export type { WorkerRole, IWorker, WorkerConfig, TaskFeatures, ContentDomain, ITeam, TeamCompositionRule, TeamWorkerDef, ITeamManager, TeamContext, AgentFactory, IWorkerRegistry, WorkerRegistration, } from "./team/index.js";
 export { WORKER_ROLES, LENGTH_THRESHOLDS } from "./team/index.js";
 //# sourceMappingURL=index.d.ts.map

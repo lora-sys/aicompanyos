@@ -269,6 +269,8 @@ export {
   TeamManager,
   WorkerRegistry,
   globalWorkerRegistry,
+  HistoryReader,
+  DEFAULT_HISTORY_READER_CONFIG,
 } from "./team/index.js";
 export type {
   WorkerRole,

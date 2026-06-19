@@ -56,8 +56,8 @@ if (existsSync(envPath)) {
 // 配置
 // ============================================================
 
-const TEST_CONTENT_TYPE: ContentType = "newsletter"; // 测试Newsletter类型
-const TEST_TOPIC = "本周 AI 领域重要动态：大模型进展、开源工具推荐与行业观察周报";
+const TEST_CONTENT_TYPE: ContentType = "seed"; // 切回 seed 验证跨类型 Memory 回流
+const TEST_TOPIC = "推荐一款最近改变我工作流的 AI 工具 —— Cursor IDE 的深度使用体验与效率提升";
 
 // ============================================================
 // 辅助函数
@@ -116,6 +116,46 @@ async function main(): Promise<void> {
   log("DEPT", `OutputPipeline 步骤数: ${deptConfig.outputPipeline?.postProcessors.length ?? 0}`);
   log("DEPT", `质量门槛: pass=${deptConfig.qualityGate?.passThreshold}, excellence=${deptConfig.qualityGate?.excellenceThreshold}`);
 
+  // ===== Step 3.5: Memory 回流 — HistoryReader 读取沉淀物并注入 Writer Prompt =====
+  separator("Step 3.5: Memory 回流 (HistoryReader → Prompt 前缀注入)");
+  let memoryPromptPrefix = "";
+  let historyStats = { experienceCount: 0, capabilityCount: 0, hasUserProfile: false };
+  try {
+    const { EvolutionDocsManager, FileStore } = await import("@aicos/memory");
+    const loopEngine = await import("@aicos/loop-engine");
+    // 动态导入时解构可能失败，使用属性访问
+    const HistoryReader = (loopEngine as any).HistoryReader;
+
+    const fileStore = new FileStore(join(process.cwd(), "memory"));
+    const evoMgr = new EvolutionDocsManager(fileStore);
+    const reader = new HistoryReader(
+      () => evoMgr.getSelfMD(),
+      () => evoMgr.getUserMD(),
+      {
+        maxExperiences: 5,
+        maxCapabilities: 8,
+        includeUserProfile: true,
+      }
+    );
+
+    const historyResult = await reader.buildPromptPrefix(TEST_TOPIC, {
+      contentType: TEST_CONTENT_TYPE,
+    });
+    memoryPromptPrefix = historyResult.promptPrefix;
+    historyStats = historyResult.stats;
+
+    if (memoryPromptPrefix) {
+      log("HISTORY", `✅ 历史经验已加载: ${historyStats.experienceCount}条经验, ${historyStats.capabilityCount}项能力, 用户画像=${historyStats.hasUserProfile}`);
+      log("HISTORY", `Prompt前缀长度: ${memoryPromptPrefix.length} 字符`);
+      // 显示前缀预览（前200字符）
+      log("HISTORY", `预览: ${memoryPromptPrefix.slice(0, 200)}...`);
+    } else {
+      log("HISTORY", "⚠️ 无历史经验（首次运行或 Memory 为空）— 这是正常的，后续运行会积累");
+    }
+  } catch (e) {
+    log("HISTORY", `⚠️ HistoryReader 初始化失败（非致命）: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   // ===== Step 4: 初始化工具和 Agent =====
   separator("Step 4: 初始化 ToolRegistry + Agent");
   const toolRegistry = new ToolRegistry();
@@ -143,12 +183,20 @@ async function main(): Promise<void> {
   log("TOOL", `web_search 可用: ${toolRegistry.has("web_search")}`);
 
   // ★ ADR-005: 使用部门 Prompt 创建 WriterAgent
+  // ★ v0.3.1+: 拼接 Memory 回流前缀（历史经验 + 能力画像 + 用户画像）
+  const enhancedWriterPrompt = memoryPromptPrefix
+    ? `${memoryPromptPrefix}\n\n${deptConfig.agentProfile.writerSystemPrompt}`
+    : deptConfig.agentProfile.writerSystemPrompt;
+
   const writerAgent = new WriterAgent(
     toolRegistry,
     llmProvider,
-    deptConfig.agentProfile.writerSystemPrompt // 注入部门专属 System Prompt
+    enhancedWriterPrompt // 注入部门专属 Prompt + Memory 回流前缀
   );
-  log("WRITER", `✅ WriterAgent 已创建（使用 ${TEST_CONTENT_TYPE} 专属 Prompt）`);
+  log("WRITER", `✅ WriterAgent 已创建（使用 ${TEST_CONTENT_TYPE} 专属 Prompt${memoryPromptPrefix ? " + Memory回流" : ""}）`);
+  if (memoryPromptPrefix) {
+    log("WRITER", `增强 Prompt 总长: ${enhancedWriterPrompt.length} (原=${deptConfig.agentProfile.writerSystemPrompt.length}, 前缀=${memoryPromptPrefix.length})`);
+  }
 
   // ★ ADR-005: 使用部门维度创建 CriticAgent
   const criticAgent = new CriticAgent(llmProvider, DEFAULT_WRITING_CRITERIA);

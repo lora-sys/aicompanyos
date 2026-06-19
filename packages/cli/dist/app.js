@@ -2,8 +2,11 @@
 // 整合 TUI 组件、Loop Engine、MCP、Memory 等子系统
 import { LoopStateMachine, LoopState, InterrogateEngine, PlanEngine, VerifyEngine, RollbackManager, ArtifactManager, ToolRegistry, LoopHarness, DEFAULT_WRITING_CRITERIA, PiAILLMProvider, } from "@aicos/loop-engine";
 import { MemoryManager } from "@aicos/memory";
+import { MCPClientAdapter, EXA_MCP_CONFIG } from "@aicos/mcp";
 import { WriterAgent } from "@aicos/subagents/writer";
 import { CriticAgent } from "@aicos/subagents/critic";
+// ★ ADR-005: 内容产出部 — 部门配置
+import { ContentProductionDepartment, initDepartmentMemory, OutputPipeline, } from "@aicos/content-production";
 import { InterrogateModal } from "./components/interrogate-modal.js";
 import { buildHeaderData, formatHeaderString } from "./components/header.js";
 import { buildLoopVisualizationData, formatLoopASCII, } from "./components/loop-visualization.js";
@@ -51,6 +54,13 @@ export class AICOSApp {
     criticAgent = null;
     /** 拷问结果缓存（用于传递给规划阶段） */
     cachedInterrogationResults = {};
+    // ★ ADR-005: 内容类型选择
+    /** 当前选中的内容格式 */
+    selectedContentType = null;
+    /** 当前激活的部门配置 */
+    activeDepartmentConfig = null;
+    /** 内容产出部实例 */
+    contentDept = new ContentProductionDepartment();
     /** 是否正在运行 */
     running = false;
     constructor(llmProvider) {
@@ -100,9 +110,32 @@ export class AICOSApp {
         this.addLog("info", "app", "WriterAgent + CriticAgent 已注册到 LoopHarness");
         // RollbackManager 延迟到有 stateMachine 时创建
         this.addLog("info", "app", "引擎初始化完成");
-        // 初始化 MCP 连接状态（模拟）
-        this.state.mcpStatus.set("Exa Server", "disconnected");
-        this.addLog("info", "mcp", "MCP 连接已就绪");
+        // ★ 初始化 MCP 连接（Exa 搜索服务）
+        try {
+            const mcpAdapter = new MCPClientAdapter();
+            this.addLog("info", "mcp", `正在连接 Exa MCP Server (${EXA_MCP_CONFIG.url})...`);
+            const exaInfo = await mcpAdapter.connect(EXA_MCP_CONFIG);
+            this.addLog("info", "mcp", `✅ Exa MCP 已连接，发现 ${exaInfo.tools.length} 个工具: ${exaInfo.tools.map(t => t.name).join(", ")}`);
+            // 注册 MCP 工具到 ToolRegistry（自动创建 web_search 等别名）
+            this.toolRegistry.connectMCP(mcpAdapter);
+            this.addLog("info", "mcp", `✅ MCP 工具已注册到 ToolRegistry（含别名: web_search → exa_exa_web_search）`);
+            // 更新状态
+            this.state.mcpStatus.set("Exa Server", "connected");
+        }
+        catch (e) {
+            const err = e instanceof Error ? e.message : String(e);
+            this.addLog("warn", "mcp", `⚠️ Exa MCP 连接失败（非致命）: ${err}`);
+            this.addLog("warn", "mcp", `web_search 工具将不可用，WriterAgent 会跳过搜索步骤`);
+            this.state.mcpStatus.set("Exa Server", "error");
+        }
+        // ★ ADR-005: 初始化内容产出部专用记忆（design.mdx / self.jsonl / user.jsonl）
+        try {
+            const memResult = await initDepartmentMemory(process.cwd());
+            this.addLog("info", "department", `内容产出部记忆初始化: design.mdx=${memResult.designMDX}, self.jsonl=${memResult.selfJSONL}, user.jsonl=${memResult.userJSONL}`);
+        }
+        catch (e) {
+            this.addLog("warn", "department", `部门记忆初始化失败（非致命）: ${e instanceof Error ? e.message : e}`);
+        }
     }
     /**
      * 启动 TUI
@@ -118,6 +151,7 @@ export class AICOSApp {
         // 如果没有 TUI 实例，输出欢迎信息到控制台
         if (!this.tui) {
             console.log(formatWelcomeScreen());
+            this.showContentTypeMenu();
             console.log("\n输入任务描述开始，或输入 'q' 退出。\n");
         }
     }
@@ -151,6 +185,17 @@ export class AICOSApp {
         // 全局快捷键
         if (trimmed.toLowerCase() === "q") {
             this.quit();
+            return;
+        }
+        // ★ ADR-005: 内容类型选择命令
+        const typeMatch = trimmed.match(/^\/(?:type|格式)\s+(\S+)$/i);
+        if (typeMatch) {
+            this.selectContentType(typeMatch[1]);
+            return;
+        }
+        // /type 或 /格式 显示可用类型列表
+        if (trimmed === "/type" || trimmed === "/格式" || trimmed.toLowerCase() === "help") {
+            this.showContentTypeMenu();
             return;
         }
         // 如果有活跃的 Modal，优先处理 Modal 输入
@@ -266,6 +311,93 @@ export class AICOSApp {
         this.activeInterrogateModal = null;
         this.state.activeModal = null;
         this.render();
+    }
+    // ★ ADR-005: 内容类型选择（部门路由核心）
+    /**
+     * 显示可用内容格式菜单
+     */
+    showContentTypeMenu() {
+        const types = this.contentDept.getAvailableTypes();
+        const current = this.selectedContentType
+            ? `\n  ✅ 当前选择: ${types.find((t) => t.type === this.selectedContentType)?.label ?? this.selectedContentType}`
+            : "\n  ⚪ 未选择（默认使用 article）";
+        console.log(`
+┌─ 内容产出部 — 格式选择 ──────────────────────────┐
+│                                                     │
+│  可用内容格式:                                       │${current}
+│                                                     │`);
+        for (let i = 0; i < types.length; i++) {
+            const t = types[i];
+            const marker = t.type === this.selectedContentType ? "▸" : " ";
+            console.log(`  ${marker} [${i + 1}] ${t.label.padEnd(18)} ${t.description}`);
+        }
+        console.log(`│                                                     │
+│  使用方式:                                            │
+│    /type 1 或 /type article     选择图文/长文          │
+│    /type 2 或 /type seed        选择种草/短图文        │
+│    /type 3 或 /type short-video 选择短视频脚本         │
+│    /type 4 或 /type newsletter  选择Newsletter/周报    │
+│                                                     │
+└─────────────────────────────────────────────────────┘`);
+    }
+    /**
+     * 选择内容格式并加载对应部门配置
+     *
+     * 这是 ADR-005 部门路由的核心方法：
+     * 1. 根据 contentType 获取 DepartmentConfig
+     * 2. 将配置注入 LoopHarness
+     * 3. 将 Writer Prompt 注入 WriterAgent
+     * 4. 将 Critic 维度注入 CriticAgent
+     */
+    selectContentType(type) {
+        // 支持数字快捷键 (1-4)
+        const typeMap = {
+            "1": "article",
+            "2": "seed",
+            "3": "short-video",
+            "4": "newsletter",
+        };
+        const resolvedType = typeMap[type] ?? type;
+        const validTypes = ContentProductionDepartment.SUPPORTED_TYPES;
+        if (!validTypes.includes(resolvedType)) {
+            this.addLog("warn", "department", `不支持的内容格式: "${type}"，可用: ${validTypes.join(", ")}`);
+            console.log(`\n⚠️ 不支持的内容格式: "${type}"\n   可用: ${validTypes.join(", ")}\n   输入 /type 查看列表\n`);
+            return;
+        }
+        try {
+            // 1. 获取部门配置
+            const deptConfig = this.contentDept.getConfig(resolvedType);
+            this.selectedContentType = resolvedType;
+            this.activeDepartmentConfig = deptConfig;
+            // 2. 注入 LoopHarness（含 departmentConfig + outputProcessor 回调）
+            this.loopHarness.setDepartmentConfig(deptConfig);
+            // ★ ADR-005: 注入 outputProcessor 回调 — 解决 loop-engine ↔ content-production 循环依赖
+            // CLI 层静态导入 OutputPipeline（cli → content-production 方向，无循环），
+            // 通过 setOutputProcessor() 闭包注入到 LoopHarness
+            if (deptConfig.outputPipeline) {
+                const pipelineConfig = deptConfig.outputPipeline;
+                this.loopHarness.setOutputProcessor(async (rawContent, ctx) => {
+                    const pipeline = new OutputPipeline(pipelineConfig);
+                    return pipeline.process(rawContent, ctx);
+                });
+                this.addLog("info", "department", "outputProcessor 回调已通过 setOutputProcessor() 注入");
+            }
+            // 3. 注入 WriterAgent customSystemPrompt
+            if (this.writerAgent) {
+                this.writerAgent.setCustomSystemPrompt(deptConfig.agentProfile.writerSystemPrompt);
+            }
+            // 4. 如果有专属 Critic 维度，更新 CriticAgent
+            if (this.criticAgent && deptConfig.agentProfile.criticDimensions) {
+                this.criticAgent.setCustomDimensions?.(deptConfig.agentProfile.criticDimensions);
+            }
+            const typeLabel = this.contentDept.getAvailableTypes().find((t) => t.type === resolvedType)?.label ?? resolvedType;
+            this.addLog("info", "department", `已切换到内容产出部 → ${typeLabel} (${resolvedType})`);
+            console.log(`\n✅ 已切换到: ${typeLabel}\n   Writer Prompt 已注入 | GoalTemplates 已加载 | OutputPipeline 已配置\n`);
+            this.render();
+        }
+        catch (e) {
+            this.addLog("error", "department", `部门配置加载失败: ${e instanceof Error ? e.message : e}`);
+        }
     }
     /**
      * 退出应用

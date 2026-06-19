@@ -1,4 +1,5 @@
 import { type LLMProvider, type InterrogationSession } from "@aicos/loop-engine";
+import type { ContentType } from "@aicos/loop-engine";
 /**
  * AI Company OS CLI 应用
  * 负责初始化所有组件、管理应用状态、协调 Loop 执行流程
@@ -40,6 +41,12 @@ export declare class AICOSApp {
     private criticAgent;
     /** 拷问结果缓存（用于传递给规划阶段） */
     private cachedInterrogationResults;
+    /** 当前选中的内容格式 */
+    private selectedContentType;
+    /** 当前激活的部门配置 */
+    private activeDepartmentConfig;
+    /** 内容产出部实例 */
+    private contentDept;
     /** 是否正在运行 */
     private running;
     constructor(llmProvider?: LLMProvider);
@@ -87,6 +94,20 @@ export declare class AICOSApp {
      * 关闭 Modal
      */
     closeModal(): void;
+    /**
+     * 显示可用内容格式菜单
+     */
+    showContentTypeMenu(): void;
+    /**
+     * 选择内容格式并加载对应部门配置
+     *
+     * 这是 ADR-005 部门路由的核心方法：
+     * 1. 根据 contentType 获取 DepartmentConfig
+     * 2. 将配置注入 LoopHarness
+     * 3. 将 Writer Prompt 注入 WriterAgent
+     * 4. 将 Critic 维度注入 CriticAgent
+     */
+    selectContentType(type: string | ContentType): void;
     /**
      * 退出应用
      */

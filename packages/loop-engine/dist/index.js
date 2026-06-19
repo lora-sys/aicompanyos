@@ -48,6 +48,6 @@ export { CompletionGuard, VerificationPipeline, CommandExecutor, TestExecutor, L
 // ★ ADR-005: Department Architecture — 部门制抽象层
 export { CONTENT_TYPES, } from "./department/index.js";
 // ★ Dynamic Team Architecture — 动态团队抽象层
-export { TaskAnalyzer, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, } from "./team/index.js";
+export { TaskAnalyzer, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, HistoryReader, DEFAULT_HISTORY_READER_CONFIG, } from "./team/index.js";
 export { WORKER_ROLES, LENGTH_THRESHOLDS } from "./team/index.js";
 //# sourceMappingURL=index.js.map

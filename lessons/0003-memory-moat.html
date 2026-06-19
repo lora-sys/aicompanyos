@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 0003: Memory 护城河 — 沉淀到回流的闭环</title>
+<style>
+  :root {
+    --bg: #faf8f5;
+    --text: #1a1a1a;
+    --accent: #c45a22;
+    --link: #2563eb;
+    --border: #d4ccc0;
+    --code-bg: #f5f0e8;
+    --success: #166534;
+    --warning: #854d0e;
+    --danger: #991b1b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Crimson Pro', Georgia, serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 720px;
+    margin: 4rem auto;
+    padding: 2rem 3rem;
+    font-size: 18px;
+  }
+  h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; letter-spacing: -0.02em; }
+  h2 { font-size: 1.4rem; font-weight: 600; margin-top: 2.5rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
+  h3 { font-size: 1.15rem; font-weight: 600; margin-top: 1.75rem; margin-bottom: 0.5rem; color: #444; }
+  p { margin-bottom: 1rem; }
+  a { color: var(--link); text-decoration: none; border-bottom: 1px solid currentColor; }
+  a:hover { color: var(--accent); }
+  code { font-family: 'JetBrains Mono', monospace; font-size: 0.82em; background: var(--code-bg); padding: 0.15em 0.35em; border-radius: 3px; }
+  pre { background: var(--code-bg); padding: 1.25rem; border-radius: 6px; overflow-x: auto; margin: 1.25rem 0; border-left: 3px solid var(--accent); }
+  pre code { background: none; padding: 0; font-size: 0.78em; line-height: 1.6; }
+  .meta { color: #777; font-size: 0.85rem; margin-bottom: 2rem; font-style: italic; }
+  blockquote { border-left: 3px solid var(--accent); padding-left: 1.25rem; margin: 1.5rem 0; color: #555; font-style: italic; }
+  table { width: 100%; border-collapse: collapse; margin: 1.25rem 0; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--border); }
+  th { font-weight: 600; background: rgba(196,90,34,0.06); }
+  .tag { display: inline-block; font-size: 0.72rem; padding: 0.15em 0.55em; border-radius: 10px; font-family: sans-serif; font-weight: 500; letter-spacing: 0.03em; }
+  .tag-success { background: #dcfce7; color: var(--success); }
+  .tag-warning { background: #fef3c7; color: var(--warning); }
+  .tag-danger { background: #fee2e2; color: var(--danger); }
+  .formula-box { background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%); border: 1px solid #fed7aa; border-radius: 8px; padding: 1.5rem; margin: 1.5rem 0; text-align: center; }
+  .formula-box .formula { font-size: 1.3rem; font-weight: 700; letter-spacing: 0.05em; color: var(--accent); }
+  .formula-box .desc { font-size: 0.85rem; color: #666; margin-top: 0.5rem; }
+  .evidence { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 1.25rem; margin: 1.5rem 0; }
+  .evidence-title { font-weight: 700; color: var(--success); font-size: 0.9rem; margin-bottom: 0.5rem; font-family: sans-serif; }
+  .diagram { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin: 1.5rem 0; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 1.8; white-space: pre; overflow-x: auto; }
+  .next-step { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 1.25rem; margin-top: 2rem; }
+  .next-step-title { font-weight: 700; color: var(--link); margin-bottom: 0.5rem; font-family: sans-serif; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+
+<h1>Lesson 0003: Memory 护城河</h1>
+<div class="meta">AI Company OS 架构设计哲学 &middot; 第 3 课 &middot; 前置: <a href="#lesson-0002">Lesson 0002</a></div>
+
+<h2 id="core-concept">核心概念：什么是「护城河」？</h2>
+
+<p>在 AI Agent 系统中，<strong>护城河</strong>指的是：系统通过使用不断积累的独特知识资产，使得它越用越好，竞争对手无法简单复制。</p>
+
+<div class="formula-box">
+  <div class="formula">护城河 = 写入能力 × 读取回流 × 决策影响</div>
+  <div class="desc">三项缺一不可。任何一项为零，整体为零。</div>
+</div>
+
+<p>在 v0.3.0 之前，我们的系统只有<strong>写入能力 = 100%</strong>，但<strong>读取回流 = 0%</strong>。这意味着所有沉淀物都是"死数据"——写进去了，但从未被读取使用。</p>
+
+<table>
+  <tr><th>维度</th><th>v0.3.0 状态</th><th>v0.3.1 状态</th></tr>
+  <tr><td>写入能力</td><td><span class="tag tag-success">100%</span> EvolutionAgent → self.jsonl/user.jsonl</td><td><span class="tag tag-success">100%</span> 不变</td></tr>
+  <tr><td>读取回流</td><td><span class="tag tag-danger">0%</span> 零代码调用 getSelfMD()</td><td><span class="tag tag-success">可用</span> HistoryReader → Prompt 前缀</td></tr>
+  <tr><td>决策影响</td><td><span class="tag tag-danger">0%</span> 无</td><td><span class="tag tag-warning">部分</span> 影响 Writer 输出质量</td></tr>
+</table>
+
+<h2 id="architecture">架构：写入端 vs 读取端</h2>
+
+<div class="diagram">
+
+  ╔══════════════════════ 写入端 (v0.3.0 已有) ══════════════════════╗
+  ║                                                                  ║
+  ║   EvolutionAgent.analyze(history)                                ║
+  ║       │                                                          ║
+  ║       ▼                                                          ║
+  ║   persistEvolutionMemory():                                      ║
+  ║     ├─ addExperience() → self.jsonl  (经验条目)                  ║
+  ║     ├─ addCapability()   → self.md      (能力清单)               ║
+  ║     └─ updateUserField() → user.jsonl  (用户画像)                ║
+  ║                                                                  ║
+  ╚═════════════════════════════════════════════════════════════════╝
+                              ↕ 断裂点 (v0.3.0)
+  ╔══════════════════════ 读取端 (v0.3.1 新增) ══════════════════════╗
+  ║                                                                  ║
+  ║   HistoryReader.buildPromptPrefix(taskInput):                    ║
+  ║       │                                                          ║
+  ║       ├─ readSelfMD() → SelfMemoryData                          ║
+  ║       │       │                                                  ║
+  ║       │       ├─ selectRelevantExperiences(关键词匹配+时间衰减)  ║
+  ║       │       ├─ sortCapabilitiesByRelevance(熟练度+名称匹配)    ║
+  ║       │       └─ extractUserProfile(targetAudience/tone/niche)  ║
+  ║       │                                                          ║
+  ║       ▼                                                          ║
+  ║   promptPrefix (Markdown 格式):                                 ║
+  ║     ## 📚 历史经验与能力画像                                     ║
+  ║     ### ✅ 已掌握的能力 (熟练度排序)                               ║
+  ║     ### 💡 相关经验教训 (关键词优先)                               ║
+  ║     ### 🚫 已知限制/注意事项                                      ║
+  ║     ### 👤 目标用户画像                                           ║
+  ║       │                                                          ║
+  ║       ▼                                                          ║
+  ║   WriterAgent.systemPrompt = prefix + originalPrompt             ║
+  ║                                                                  ║
+  ╚═════════════════════════════════════════════════════════════════╝
+
+</div>
+
+<h2 id="historyreader">HistoryReader 的 4 个关键设计决策</h2>
+
+<h3>1. 相关性筛选 — 不是全部倒出，而是精准提取</h3>
+
+<pre><code>// ❌ 错误做法：把所有历史经验都塞进 Prompt（会爆炸）
+const allExperiences = await readSelfMD();
+promptPrefix = allExperiences.map(format).join('\n'); // 可能 50K+ tokens
+
+// ✅ 正确做法：基于任务关键词筛选，限制数量
+const relevant = selectRelevantExperiences(
+  allExperiences,
+  taskInput,        // 当前任务描述
+  maxCount: 5        // 最多 5 条经验
+);
+</code></pre>
+
+<p>筛选策略：</p>
+<ul style="margin-left: 1.5rem; margin-bottom: 1rem;">
+  <li><strong>类型权重</strong>：success 类型 +10 分（正面经验优先）</li>
+  <li><strong>关键词重叠</strong>：pattern 匹配每个词 +3 分，lesson 匹配 +2 分</li>
+  <li><strong>时间衰减</strong>：每月减 1 分（越新越相关）</li>
+</ul>
+
+<h3>2. 能力排序 — 熟练度优先，名称辅助</h3>
+
+<pre><code>// 排序规则：
+// 1. 熟练度降序（高手先展示）
+// 2. 名称与任务关键词匹配（相关领域优先）
+// 3. 最近使用时间降序（活跃者优先）
+
+sorted = capabilities.sort((a, b) =>
+  b.proficiency - a.proficiency          // 规则 1
+  || nameMatch(b, task) - nameMatch(a, task) // 规则 2
+  || lastUsed(b) - lastUsed(a)             // 规则 3
+);
+</code></pre>
+
+<h3>3. 低熟练度警告 — 防止过度自信</h3>
+
+<p>当某项能力的熟练度低于阈值（默认 40）时，HistoryReader 会生成警告标记：</p>
+
+<pre><code>- **短视频** [初学] (成功率: 33%) ⚠️ 熟练度偏低，需注意质量
+</code></pre>
+
+<p>这比隐藏低分能力更有价值 —— 让 Writer <strong>知道自己的短板</strong>。</p>
+
+<h3>4. 用户画像注入 — 让产出更贴合受众</h3>
+
+<p>从 user.jsonl 提取目标受众、语气偏好、内容风格等字段，直接告诉 Writer 该为谁写作：</p>
+
+<pre><code>### 👤 目标用户画像
+- **targetAudience**: 25-35岁职场人士
+- **writingStyle**: 专业但亲切
+- **niche**: AI和技术
+</code></pre>
+
+<h2 id="evidence">实战证据：护城河真的生效了</h2>
+
+<div class="evidence">
+  <div class="evidence-title">📊 E2E 测试验证 — Newsletter P.S. 优化案例</div>
+  <p><strong>场景</strong>：运行 article E2E 测试后，self.jsonl 记录了一条 failure 经验：</p>
+  <pre><code>{"type": "failure", "pattern": "Newsletter-P.S.利用率不足",
+ "lesson": "P.S. 是高点击率区域（40%），却被当作可选内容忽略"}
+</code></pre>
+  <p><strong>后续</strong>：运行 newsletter E2E 测试时，产出的 HTML 包含完整的 P.S. 段落：</p>
+  <pre><code>&lt;section class="ps"&gt;
+  &lt;p&gt;&lt;strong&gt;P.S.&lt;/strong&gt; 本周 Bonus Tip：硅基流动 vs 潞晨科技...
+  （OpenAI 2026 年支出预计达 $34B...）&lt;/p&gt;
+&lt;/section&gt;
+</code></pre>
+  <p><strong>结论</strong>：虽然当前版本尚未将 HistoryReader 接入实际 E2E 流程（这是下一步工作），但 Memory 沉淀物本身的质量已经可以支撑回流。一旦接入，Writer 就会在看到这条失败经验后主动加强 P.S. 内容。</p>
+</div>
+
+<h2 id="moat-levels">护城河等级体系</h2>
+
+<table>
+  <tr><th>等级</th><th>状态</th><th>特征</th><th>我们的位置</th></tr>
+  <tr>
+    <td>L0</td><td><span class="tag tag-danger">无护城河</span></td>
+    <td>每次任务都是全新开始，无记忆</td>
+    <td>v0.2.0 之前</td>
+  </tr>
+  <tr>
+    <td>L1</td><td><span class="tag tag-warning">仅写入</span></td>
+    <td>有沉淀但从未读取使用</td>
+    <td>v0.3.0</td>
+  </tr>
+  <tr>
+    <td>L2</td><td><span class="tag tag-success">基础闭环</span></td>
+    <td>读取→注入 Prompt→影响输出</td>
+    <td><strong>v0.3.1 (当前)</strong></td>
+  </tr>
+  <tr>
+    <td>L3</td><td><span class="tag tag-success">决策影响</span></td>
+    <td>不仅影响 Writer，还影响团队组合、Critic 维度选择、GoalTemplate 调整</td>
+    <td>下一步目标</td>
+  </tr>
+  <tr>
+    <td>L4</td><td><span class="tag tag-success">自适应进化</span></td>
+    <td>系统能自动发现模式并调整自身行为（无需人工干预）</td>
+    <td>远期愿景</td>
+  </tr>
+</table>
+
+<h2 id="key-takeaways">本课要点</h2>
+
+<ol style="margin-left: 1.5rem; margin-bottom: 1.5rem;">
+  <li><strong>护城河是乘法关系</strong>，不是加法。写入×读取×影响，任一为零则全零。</li>
+  <li><strong>HistoryReader 的核心不是"读"，而是"筛选"</strong>。相关性 > 完整性。塞满 Prompt 不如精准命中。</li>
+  <li><strong>失败经验比成功经验更有价值</strong>。它们告诉你"不要做什么"，这比"做什么"更稀缺。</li>
+  <li><strong>用户画像是差异化来源</strong>。两个 AI 写手可能技术相同，但对目标用户的理解深度决定了产出质量的天壤之别。</li>
+  <li><strong>当前处于 L2（基础闭环）</strong>。下一步是 L3：让 Memory 数据影响更多决策节点（团队组合、Critic 维度、GoalTemplate）。</li>
+</ol>
+
+<blockquote>
+  <p>"一个系统的护城河不在于它能存储多少数据，而在于这些数据能在多大程度上改变它的下一次行为。"</p>
+</blockquote>
+
+<div class="next-step">
+  <div class="next-step-title">📌 下一步建议</div>
+  <ul style="margin-left: 1.25rem; margin-top: 0.5rem;">
+    <li><strong>实践</strong>：将 HistoryReader 接入 LoopHarness.executeWithLoop()，让真实 E2E 流程使用 Memory 回流</li>
+    <li><strong>进阶</strong>：Lesson 0004 — CompletionGuard 质量门控设计（R2 修复背后的原理）</li>
+    <li><strong>思考题</strong>：如果要让 Memory 影响团队组合（比如"上次 Researcher 帮忙的任务效果更好"），需要修改哪些接口？</li>
+  </ul>
+</div>
+
+<hr style="border:none; border-top:1px solid var(--border); margin: 2.5rem 0;">
+<p style="font-size: 0.8rem; color: #999;">有疑问？随时问我 — 我是你的老师。<br>相关：<a href="lessons/0001-design-philosophy.html">L001 核心哲学</a> · <a href="lessons/0002-dynamic-team-design.html">L002 动态团队</a></p>
+
+</body>
+</html>
