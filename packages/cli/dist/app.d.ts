@@ -1,11 +1,14 @@
 import { type LLMProvider, type InterrogationSession } from "@aicos/loop-engine";
+import type { ContentType } from "@aicos/loop-engine";
 /**
  * AI Company OS CLI 应用
  * 负责初始化所有组件、管理应用状态、协调 Loop 执行流程
  */
 export declare class AICOSApp {
-    /** TUI 实例（pi-tui 或 mock） */
+    /** TUI 实例（pi-tui 差分渲染引擎） */
     private tui;
+    /** pi-tui Terminal 实例 */
+    private terminal;
     /** 应用状态 */
     private state;
     /** Loop 状态机 */
@@ -40,6 +43,12 @@ export declare class AICOSApp {
     private criticAgent;
     /** 拷问结果缓存（用于传递给规划阶段） */
     private cachedInterrogationResults;
+    /** 当前选中的内容格式 */
+    private selectedContentType;
+    /** 当前激活的部门配置 */
+    private activeDepartmentConfig;
+    /** 内容产出部实例 */
+    private contentDept;
     /** 是否正在运行 */
     private running;
     constructor(llmProvider?: LLMProvider);
@@ -54,10 +63,30 @@ export declare class AICOSApp {
      */
     start(): Promise<void>;
     /**
-     * 主渲染循环
-     * 根据当前状态组装布局数据并调用 TUI 渲染
+     * 重建整个 TUI 组件树
+     * 在状态变化时调用，重新构建所有子组件
+     */
+    private rebuildLayout;
+    /**
+     * 主渲染入口
+     * TUI 模式：重建组件树并请求重绘
+     * 非TUI模式：回退到终端输出
      */
     render(): void;
+    /** 构建顶栏组件: Box + Text（应用名 + 状态 + TaskID） */
+    private buildHeaderComponent;
+    /** 构建主区域组件: 根据 mode 返回不同内容 */
+    private buildMainComponent;
+    /** 构建拷问 Modal 组件（Box overlay 风格） */
+    private buildModalComponent;
+    /** 构建侧边栏组件: MCP 状态 + 工具列表 */
+    private buildSidebarComponent;
+    /** 构建底栏组件: 日志流 + 快捷键提示（★ pi-tui Markdown 富文本渲染） */
+    private buildFooterComponent;
+    /**
+     * 构建 Markdown 格式的日志内容（独立静态方法，避免模板字符串中反引号嵌套问题）
+     */
+    private static buildLogMarkdown;
     /**
      * 处理用户输入
      * 分发到对应的处理器
@@ -87,6 +116,22 @@ export declare class AICOSApp {
      * 关闭 Modal
      */
     closeModal(): void;
+    /**
+     * 显示可用内容格式菜单
+     * ★ TUI 模式：使用 pi-tui SelectList overlay
+     * 非TUI模式：回退到 console.log
+     */
+    showContentTypeMenu(): void;
+    /**
+     * 选择内容格式并加载对应部门配置
+     *
+     * 这是 ADR-005 部门路由的核心方法：
+     * 1. 根据 contentType 获取 DepartmentConfig
+     * 2. 将配置注入 LoopHarness
+     * 3. 将 Writer Prompt 注入 WriterAgent
+     * 4. 将 Critic 维度注入 CriticAgent
+     */
+    selectContentType(type: string | ContentType): void;
     /**
      * 退出应用
      */
@@ -134,10 +179,6 @@ export declare class AICOSApp {
      * 运行进化阶段
      */
     private runEvolutionPhase;
-    /**
-     * 构建完整的 TUI 布局数据
-     */
-    private buildLayout;
     /**
      * 获取主区域显示模式
      */

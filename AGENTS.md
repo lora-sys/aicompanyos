@@ -28,6 +28,9 @@ Step 4: Agent 实现层
 Step 5: 编排与进化层
    ├─ packages/evolution/MODULE_GUIDE.md  ← 自进化引擎
    └─ packages/cli/MODULE_GUIDE.md        ← CLI 入口 + TUI 组件
+
+Step 6: 部门层（ADR-005 部门制架构）
+   └─ packages/departments/content-production/ ← 内容产出部（首个部门实现）
 ```
 
 ---
@@ -40,16 +43,33 @@ Step 5: 编排与进化层
 | 2 | [mcp](packages/mcp/MODULE_GUIDE.md) | `@aicos/mcp` | MCP 协议客户端 + Exa 搜索 | 基础设施 | `MCPClientAdapter`, `EXA_MCP_CONFIG` |
 | 3 | [memory](packages/memory/MODULE_GUIDE.md) | `@aicos/memory` | self.jsonl / user.jsonl / design.mdx 持久化 | 基础设施 | `MemoryManager`, `EvolutionDocsManager` |
 | 4 | [evidence-chain](packages/evidence-chain/MODULE_GUIDE.md) | `@aicos/evidence-chain` | 执行证据链记录与回放 | 基础设施 | `EvidenceChain`, `5 种 TraceRecorder` |
-| 5 | **[loop-engine](packages/loop-engine/MODULE_GUIDE.md)** | **`@aicos/loop-engine`** | **双层嵌套循环引擎（Canonical 核心）** | **核心** | **`LoopModule`, `LoopHarness`, `GradingCriteria`, `LoopStateMachine`** |
+| 5 | **[loop-engine](packages/loop-engine/MODULE_GUIDE.md)** | **`@aicos/loop-engine`** | **双层嵌套循环引擎（Canonical 核心）** | **核心** | **`LoopModule`, `LoopHarness`, `GradingCriteria`, `LoopStateMachine`, `TeamManager`, `TaskAnalyzer`, `HistoryReader`, `WorkerRegistry`** |
 | 6 | [subagents](packages/subagents/MODULE_GUIDE.md) | `@aicos/subagents` | Writer / Critic / Researcher / UI-UX Pro Max | Agent | `WriterAgent`, `CriticAgent`, `UIUXProMaxSkill` |
 | 7 | [evolution](packages/evolution/MODULE_GUIDE.md) | `@aicos/evolution` | 自进化引擎（模式提取 / 异常检测 / Diff / 合并） | 进化 | `EvolutionAgent`, `PatternExtractor`, `AnomalyDetector` |
 | 8 | [cli](packages/cli/MODULE_GUIDE.md) | `@aicos/cli` | 交互式 TUI 入口 + 6 个 UI 组件 | 入口 | `CLIApplication`, `InterrogateModal` |
+| 9 | [content-production](packages/departments/content-production/) | `@aicos/content-production` | 内容产出部（自媒体内容生产部门）| 部门 | `ContentProductionDepartment`, `ContentTeamManager`, `CONTENT_TEAM_RULES` |
 
 ---
 
 ## 架构总览
 
 ```
+┌─────────────────────────────────────────────────────────────────────┐
+│              packages/departments (部门层)                           │
+│   ContentProductionDepartment → DepartmentConfig (4种ContentType)    │
+└──────────────────────────┬──────────────────────────────────────────┘
+                           │ departmentConfig 注入
+                           ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  L2.5: Dynamic Team Layer ← 任务特征驱动的智能组队 (2-5人)          │
+│     ├─ TaskAnalyzer: 7 维特征提取（规则引擎）                       │
+│     ├─ TeamComposer: 8 条优先级规则匹配                            │
+│     ├─ TeamManager: 编排器（组合+工厂生成）                         │
+│     ├─ WorkerRegistry: 全局 Worker 注册表                          │
+│     └─ HistoryReader: Memory 回流→Prompt 注入                      │
+└──────────────────────────┬──────────────────────────────────────────┘
+                           │ team orchestration
+                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        packages/cli (入口层)                         │
 │   CLIApplication → executeLoop() → 6 阶段状态机 → TUI 渲染           │
@@ -78,9 +98,9 @@ Step 5: 编排与进化层
 └──────────┘ └──────────┘  └──────────────┘  └───────────────┘
 ```
 
-**依赖方向**: cli → subagents → loop-engine → mcp / memory / evidence-chain / config / evolution
+**依赖方向**: cli → content-production → loop-engine → memory / mcp / evidence-chain / config / evolution
 
-> **星形拓扑**: `loop-engine` 是被最多包引用的核心基础设施。不存在循环依赖。
+> **星形拓扑**: `loop-engine` 是被最多包引用的核心基础设施。`team` 子模块是通用层（不依赖任何部门），`content-production/src/team` 是部门规则层（依赖 `loop-engine/team`）。不存在循环依赖。
 
 ---
 
@@ -103,18 +123,39 @@ Step 5: 编排与进化层
 │  输出: ExecutionPlan { steps: PlanStep[] }    │
 └──────────────────────┬────────────────────────┘
                        ▼
+┌─ DEPARTMENT CONFIG (ADR-005) ─────────────────┤
+│  ContentProductionDepartment.getConfig(type)   │
+│  → DepartmentConfig {                         │
+│      agentProfile, goalTemplates,              │
+│      outputPipeline, qualityGate               │
+│    }                                          │
+│  → 注入 LoopHarness.departmentConfig           │
+│  → 注入 LoopHarness.outputProcessor (回调)      │
+└──────────────────────┬────────────────────────┘
+                       ▼
 ┌─ EXECUTING × N steps ─────────────────────────┤
 │  LoopHarness.executeWithLoop(plan, context)    │
-│    └─ LoopModule.run(step) [Inner Loop]       │
-│       ├─ Round 1: WriterAgent.generate()       │
+│    [departmentConfig 注入:                     │
+│     → Writer Prompt 替换为部门专属 prompt       │
+│     → Critic 维度替换为部门质量门槛             │
+│    ]                                           │
+│    [outputProcessor 回调注入（避免循环依赖）:    │
+│     → CLI 层传入 OutputPipeline 闭包            │
+│     → executeWithLoop() 完成后自动调用           │
+│     → 产出 md → html 平台适配                   │
+│    ]                                           │
+│     → CompletionGuard 使用部门 GoalTemplate    │
+│    ]                                           │
+│    └─ LoopModule.run(step) [Inner Loop — 目标驱动]      │
+│       ├─ Iteration 1: WriterAgent.generate()     │
 │       │   └─ writingWorkflow:                  │
 │       │      UIUXSkill → research → LLM → write│
 │       │                                       │
-│       ├─ Round 1: CriticAgent.evaluate()       │
-│       │   └─ 5 维评分 → GradingResult          │
+│       ├─ Iteration 1: CriticAgent.evaluate()   │
+│       │   └─ 5 维评分 + CompletionGuard 检查    │
 │       │                                       │
-│       ├─ IterationHandoff → Round 2...4       │
-│       │   (refine / pivot / accept)            │
+│       ├─ shouldStop()? → Iteration 2...N       │
+│       │   (目标驱动: Guard > 质量 > 退化 > 安全阀)│
 │       │                                       │
 │       └─ EvolutionAgent.analyze(history)       │
 │                                               │
@@ -137,11 +178,12 @@ Step 5: 编排与进化层
 └──────────────────────┬────────────────────────┘
                        ▼
 ┌─ DONE ─────────────────────────────────────────┐
-│  runArtifactPipeline():                          │
-│    .md artifacts → createHTMLArtifact() → .html │
+│  runOutputPipeline():                          │
+│    .md artifacts → OutputPipeline (部门配置)   │
+│      → FormatConverter → PlatformAdapter       │
+│      → ProcessedOutput (最终交付物)             │
 │    (可扩展: PDF / DOCX / EPUB ...)              │
-└─────────────────────────────────────────────────┘
-```
+└─────────────────────────────────────────────────┘```
 
 ### Outer Loop vs Inner Loop 对比
 
@@ -163,12 +205,12 @@ Step 5: 编排与进化层
 |------|-----------|
 | **Task** | 用户通过 CLI 提交的原始需求 |
 | **Outer Loop** | 全局 replan 循环 (EXECUTE→VERIFY→PLAN, 上限 3 次) |
-| **Inner Loop** | Writer→Critic 反馈环 (上限 4 轮) |
-| **Round** | Inner Loop 中的一次 Generate→Evaluate |
+| **Inner Loop** | Writer→Critic 目标驱动反馈环 (while !shouldStop) |
+| **Iteration** | Inner Loop 中的一次 Generate→Evaluate（目标驱动，由 CompletionGuard 主导停止） |
 | **Replan** | Verify 不达标时重新规划 |
 | **Artifact** | Step 执行后产生的产物文件 (.md / .html) |
 | **GradingCriteria** | 固定评估标准集，运行时不可变（"物理层焊死"） |
-| **IterationHandoff** | Inner Loop 轮次间状态交接对象 |
+| **shouldStop()** | 4 级优先级统一停止条件: Guard > 质量 > 退化 > 安全阀 |
 | **Context Reset** | 每轮清空上下文，仅通过 Handoff 传状态 |
 | **ConsensusLock** | 多视角审核（Writer 自评 + Critic 他评） |
 | **退化保护** | 新版本分数低于历史最佳则回滚 |
@@ -283,10 +325,14 @@ this.newAgent = new NewAgent(this.toolRegistry, this.llmProvider);
 | [packages/memory/MODULE_GUIDE.md](packages/memory/MODULE_GUIDE.md) | 记忆持久化系统 | memory 维护者 |
 | [packages/evidence-chain/MODULE_GUIDE.md](packages/evidence-chain/MODULE_GUIDE.md) | 证据链记录系统 | evidence-chain 维护者 |
 | [packages/loop-engine/MODULE_GUIDE.md](packages/loop-engine/MODULE_GUIDE.md) | Loop 引擎核心 | loop-engine 维护者 |
+| [team/](packages/loop-engine/src/team/) | 动态团队抽象层（6个文件+34个测试） | loop-engine 维护者 |
 | [packages/subagents/MODULE_GUIDE.md](packages/subagents/MODULE_GUIDE.md) | Agent 实现（4 种） | subagents 维护者 |
 | [packages/evolution/MODULE_GUIDE.md](packages/evolution/MODULE_GUIDE.md) | 自进化引擎 | evolution 维护者 |
 | [packages/cli/MODULE_GUIDE.md](packages/cli/MODULE_GUIDE.md) | CLI 入口 + TUI | cli 维护者 |
+| [content-production/team/](packages/departments/content-production/src/team/) | 内容产出部专属团队规则（5个文件+21个测试） | content-production 维护者 |
+| [docs/adr-005-department-architecture.md](docs/adr-005-department-architecture.md) | 部门制架构（ADR-005） | 架构组 |
+| [docs/adr-004-goal-driven-completion-guard.md](docs/adr-004-goal-driven-completion-guard.md) | 目标驱动停止条件体系（ADR-004） | loop-engine 维护者 |
 
 ---
 
-*最后更新：2026-06-16 | 基于 v0.1.0 全量源码扫描*
+*最后更新：2026-06-19 | 基于 v0.3.0 全量源码扫描（含 ADR-004/005 + Dynamic Team Layer）*

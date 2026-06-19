@@ -1,4 +1,4 @@
-import type { StepTraceEntry, DecisionTraceEntry, ToolCallTraceEntry, SnapshotEntry, ReasoningTraceEntry } from "./types.js";
+import type { StepTraceEntry, DecisionTraceEntry, ToolCallTraceEntry, SnapshotEntry, ReasoningTraceEntry, VerificationTraceEntry } from "./types.js";
 export declare class StepTraceRecorder {
     record(params: {
         previousState: string;
@@ -52,5 +52,16 @@ export declare class ReasoningTraceRecorder {
         modelUsed?: string;
         taskId: string;
     }): ReasoningTraceEntry;
+}
+export declare class VerificationTraceRecorder {
+    record(params: {
+        goalId: string;
+        method: string;
+        passed: boolean;
+        durationMs: number;
+        evidenceSummary: VerificationTraceEntry["evidenceSummary"];
+        round: number;
+        taskId: string;
+    }): VerificationTraceEntry;
 }
 //# sourceMappingURL=trace-recorders.d.ts.map

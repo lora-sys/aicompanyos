@@ -43,4 +43,11 @@ export { LoopHarness, } from "./loop-harness/index.js";
 export { THRESHOLDS, THRESHOLD_PROFILES, getThresholdsForProfile } from "./config/thresholds.js";
 // Loop Module 导出（可复用: Planner→Generator→Evaluator+Evolution）
 export { LoopModule, SimpleEvolutionAgent, DEFAULT_WRITING_CRITERIA, formatCriteriaForEvaluator, formatCriteriaForGenerator, } from "./loop-module/index.js";
+// ★ ADR-004: Completion Guard — 目标驱动自验证停止条件体系
+export { CompletionGuard, VerificationPipeline, CommandExecutor, TestExecutor, LintExecutor, BrowserExecutor, FileExistenceExecutor, ContentMatchExecutor, LLMAssertionExecutor, DEFAULT_COMPLETION_GUARD_CONFIG, } from "./completion-guard/index.js";
+// ★ ADR-005: Department Architecture — 部门制抽象层
+export { CONTENT_TYPES, } from "./department/index.js";
+// ★ Dynamic Team Architecture — 动态团队抽象层
+export { TaskAnalyzer, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, HistoryReader, DEFAULT_HISTORY_READER_CONFIG, } from "./team/index.js";
+export { WORKER_ROLES, LENGTH_THRESHOLDS } from "./team/index.js";
 //# sourceMappingURL=index.js.map

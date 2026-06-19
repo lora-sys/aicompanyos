@@ -1,10 +1,10 @@
 # @aicos/loop-engine — Loop 引擎核心模块
 
-> 模块定位：双层嵌套循环引擎，是整个 AI Company OS 的 Canonical 核心 | 版本 v0.2.0 | ESM | 最后更新 2026-06-16
+> 模块定位：双层嵌套循环引擎，是整个 AI Company OS 的 Canonical 核心 | 版本 v0.3.0 | ESM | 最后更新 2026-06-18
 
 ## 概述
 
-`@aicos/loop-engine` 是 AI Company OS 的核心执行引擎，实现了一套**双层嵌套循环架构**（Outer Loop: Plan 级 Replan + Inner Loop: Step 级 Writer→Critic 反馈环）。它以 `LoopStateMachine`（7 态有限状态机）驱动完整生命周期——从用户任务输入出发，经 `InterrogateEngine` 澄清需求、`PlanEngine` 生成执行计划、`LoopHarness`（委托给 `LoopModule`）执行 Writer→Critic 迭代优化、`ConsensusLock` 多票制审核、`VerifyEngine` 质量门控、最终由 `ArtifactManager` 输出产物（含 HTML 渲染能力），并在关键节点通过 `RollbackManager` 保障可恢复性。
+`@aicos/loop-engine` 是 AI Company OS 的核心执行引擎，实现了一套**双层嵌套循环架构**（Outer Loop: Plan 级 Replan + Inner Loop: Step 级 Writer→Critic 反馈环）。它以 `LoopStateMachine`（7 态有限状态机）驱动完整生命周期——从用户任务输入出发，经 `InterrogateEngine` 澄清需求、`PlanEngine` 生成执行计划、`LoopHarness`（委托给 `LoopModule`）执行 Writer→Critic 迭代优化、`ConsensusLock` 多票制审核、`VerifyEngine` 质量门控、最终由 `ArtifactManager` 输出产物（含 HTML 渲染能力），并在关键节点通过 `RollbackManager` 保障可恢复性。v0.3.0 起，通过 **ADR-005 部门制架构**支持多部门配置剖面注入（`ContentProductionDepartment` 为首个实现，`DepartmentConfig` 可直接传入 `LoopHarnessConfig`），以及 **ADR-004 目标驱动停止条件体系**（`CompletionGuard` 驱动基于 `AcceptanceGoal[]` 的自验证停止，替代纯分数门控）。
 
 整个系统的设计哲学围绕四大 Seam 接口（`IPlannerAgent` / `IGeneratorAgent` / `IEvaluatorAgent` / `IEvolutionAgent`）展开，任何 Agent 只需实现这些接口即可接入循环引擎，实现了**物理层焊死**（Critic 完整输出直接注入 Writer 输入）与**Context Reset**（每次迭代清空上下文，通过 `IterationHandoff` 传递状态）两大核心原则。
 
@@ -27,6 +27,7 @@
                             ▼                     ▼
               ┌───────────────────────────────────────────┐
               │             LoopHarness (包装层)            │
+              │  [departmentConfig?: DepartmentConfig] ★   │
               │  ┌─────────────────────────────────────┐  │
               │  │     LoopModule (Canonical 核心)      │  │
               │  │  Planner → Generator → Evaluator     │  │
@@ -76,6 +77,78 @@
 | **ToolRegistry** | 统一工具注册中心，三类工具源（Local / MCP / Skill） | `ToolRegistry`, `ToolDefinition`, `ToolCategory`, `MCPToolsAdapter`, `SkillToolsAdapter` | `src/tool-registry/registry.ts` |
 | **RollbackManager** | 回滚管理器，状态快照创建与恢复 | `RollbackManager`, `RollbackPoint`, `RollbackResult` | `src/rollback/engine.ts` |
 | **ExecutionOrchestrator** | 串行编排器（用于非 Writer step 如 ui-ux 的顺序执行） | `ExecutionOrchestrator`, `StepExecutionResult`, `AgentExecutor` | `src/orchestrator/engine.ts` |
+| **Team Architecture** (v0.3.1+) | 动态团队抽象层：任务特征驱动的智能组队 | `TeamManager`, `TaskAnalyzer`, `TeamComposer`, `WorkerRegistry`, `HistoryReader` | `src/team/` |
+
+## 动态团队架构 (v0.3.1+)
+
+> 模块定位：通用层（不依赖任何部门），位于 `src/team/` 目录下 | 6 个文件 + 34 个单元测试
+
+### 设计理念
+
+团队是**任务的函数**，不是 contentType 的函数。同一个「内容产出部」的不同任务可能组成完全不同的团队：
+
+```
+任务输入 → TaskAnalyzer(规则引擎) → TaskFeatures(7维特征)
+                                        ↓
+                              TeamComposer(8条优先级规则)
+                                        ↓
+                              ITeam(2-5个Worker)
+                                        ↓
+                         createWorkerFactories() → Map<agentType, Factory>
+                                        ↓
+                              LoopHarness.registerAgent() 注入执行
+```
+
+### 核心组件
+
+| 组件 | 职责 | 关键 API |
+|------|------|----------|
+| **TaskAnalyzer** | 从 taskInput 提取结构化特征（不调用 LLM） | `analyze(input): TaskFeatures` |
+| **TeamComposer** | 优先级规则匹配引擎，第一个命中决定团队 | `compose(features): TeamWorkerDef[]` |
+| **TeamManager** | 编排器：组合 Analyzer + Composer | `composeTeam(): ITeam` / `createWorkerFactories(): Map` |
+| **WorkerRegistry** | 全局 Worker 注册表（role/agentType 双索引） | `register() / getWorkersByRole()` |
+| **HistoryReader** | Memory 回流读取器：self.jsonl → Prompt 前缀 | `buildPromptPrefix(): HistoryPromptResult` |
+
+### TaskFeatures（7 维特征）
+
+```typescript
+interface TaskFeatures {
+  domain: ContentDomain;           // tech/lifestyle/finance/education/general
+  needsResearch: boolean;          // 是否需要外部调研
+  hasVisualContent: boolean;       // 是否有视觉设计需求
+  length: "short"|"medium"|"long";
+  qualityTier: "draft"|"standard"|"premium";
+  complexity: "low"|"medium"|"high";
+  estimatedSteps: number;
+}
+```
+
+### 组合规则示例（content-production 部门的 8 条规则）
+
+| Priority | 规则 ID | 匹配条件 | 团队 |
+|----------|---------|----------|------|
+| 10 | cp-premium-full-team | 高复杂度+调研+视觉+premium | Writer+Critic+Researcher+UIUX+Reviewer(5人) |
+| 20 | cp-research-heavy | 高复杂度+调研+premium | Writer+Critic+Researcher+Reviewer(4人) |
+| 30 | cp-visual-creative | 有视觉内容(非高复杂度) | Writer+Critic+UIUX(3人) |
+| 50 | cp-light-research | 一般调研需求 | Writer+Critic+Researcher(light)(3人) |
+| 60 | cp-premium-core | Premium质量无特殊需求 | Writer+Critic+Reviewer(3人) |
+| 70 | cp-standard | 标准质量 | Writer+Critic(2人) |
+| 80 | cp-draft | 草稿模式 | Writer+Critic(1轮)(2人) |
+| 999 | cp-fallback | 兜底（始终匹配） | Writer+Critic(2人) |
+
+### Memory 护城河（HistoryReader）
+
+```
+写入端: EvolutionAgent → addExperience() → self.md + self.jsonl
+                                              ↓ (断裂点，v0.3.1 修复)
+读取端: HistoryReader → getSelfMD() → buildPromptPrefix() → Writer System Prompt 前缀
+```
+
+HistoryReader 输出的 Prompt 前缀包含：
+- ✅ 已掌握的能力（熟练度排序）
+- 💡 相关经验教训（关键词匹配优先）
+- 🚫 已知限制/注意事项
+- 👤 目标用户画像
 
 ## 核心类型与接口
 
@@ -154,14 +227,19 @@ interface IEvolutionAgent {
 run(input)
   ├─ Step 1: Planner.plan(input)          [带重试: maxAttempts=2, baseDelayMs=1000]
   │
-  ├─ Step 2~4: for round = 1..maxIterations
+  ├─ Step 2~4: while (!shouldStop(iterations, bestScore, lastScore, iteration))  ★ 目标驱动
+  │   ├─ iteration++
   │   ├─ Generator.generate(plan, feedback?, handoff?)  [重试: maxAttempts=3, baseDelayMs=1500]
   │   ├─ Evaluator.evaluate(output, criteria, task)     [重试: maxAttempts=2, baseDelayMs=1000]
+  │   ├─ CompletionGuard.check(output) → 更新 latestGuardResult
   │   ├─ makeStrategicDecision(evaluation)              → refine | pivot | accept
-  │   ├─ Degradation Guard: score < lastScore? → break (保留最佳版本)
+  │   ├─ Degradation Guard: score < lastScore? → 标记（由 shouldStop 统一处理）
   │   ├─ 更新 bestOutput / bestScore / stagnationCount
-  │   └─ determineStopReason() → excellent | passed | max_iterations | stagnation_pivot
-  │       └─ excellent 或 passed → break
+  │   └─ shouldStop() 4级优先级判断:
+  │       ├─ P0: CompletionGuard (all_goals_verified / any_goal_blocked / ...)
+  │       ├─ P1: 质量达标 (excellent ≥90 / passed ≥75)
+  │       ├─ P2: 退化保护 (score < lastScore)
+  │       └─ P3: 安全阀 (iteration >= maxIterations) — 仅兜底
   │
   └─ Step 5: Evolution.analyze(evalHistory)    [可选, 重试: maxAttempts=2]
       └─ 返回 LoopModuleResult { iterations, bestOutput, finalScore, passed, excellent, ... }
@@ -214,7 +292,7 @@ interface GradingResult {
     description: string;
     suggestion: string;
   }>;
-  round: number;
+  iteration: number;       // 当前迭代序号（目标驱动模式）
 }
 ```
 
@@ -229,7 +307,7 @@ type StrategicDecision = "refine" | "pivot" | "accept";
 
 /** 迭代状态交接（Context Reset 时传递） */
 interface IterationHandoff {
-  round: number;
+  iteration: number;       // 当前迭代序号（目标驱动模式）
   bestScore: number;
   bestOutput?: string;
   lastEvaluation?: GradingResult;
@@ -268,6 +346,18 @@ class LoopHarness {
   /** v0.2.0: 注入动态 Few-shot 样例（从 Memory 历史数据提取） */
   setDynamicExamples(examples: DynamicExample[]): void;
 
+  /** ★ ADR-005: 注入部门配置（Writer Prompt / Critic 维度 / GoalTemplate / OutputPipeline） */
+  setDepartmentConfig(config: DepartmentConfig): void;
+
+  /** ★ ADR-005: 注入输出后处理器回调（解决 loop-engine ↔ content-production 循环依赖） */
+  setOutputProcessor(
+    processor: (rawContent: string, context: {
+      rawContent: string;
+      metadata?: Record<string, unknown>;
+      taskId?: string;
+    }) => Promise<ProcessedOutput>
+  ): void;
+
   executeWithLoop(
     plan: ExecutionPlan,                          // plan.taskProfile 用于阈值自适应
     context: LoopContext,
@@ -302,12 +392,14 @@ interface DynamicExample {
 
 #### 默认配置 (`LoopHarnessConfig`)
 
-| 字段 | 默认值 | 说明 |
-|------|--------|------|
-| `maxRewrites` | `3` | 单步最大重写次数 |
-| `qualityThreshold` | `85` | Critic score >= 此值才通过 |
-| `maxReplans` | `2` | 全局最大 replan 次数 |
-| `enableDegradationGuard` | `true` | 退化保护开关 |
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `maxRewrites` | `number` | `3` | 单步最大重写次数 |
+| `qualityThreshold` | `number` | `85` | Critic score >= 此值才通过 |
+| `maxReplans` | `number` | `2` | 全局最大 replan 次数 |
+| `enableDegradationGuard` | `boolean` | `true` | 退化保护开关 |
+| `departmentConfig` | `DepartmentConfig?` | `undefined` | ★ ADR-005: 部门配置（Writer Prompt / Critic 维度等） |
+| `outputProcessor` | `function?` | `undefined` | ★ ADR-005: 输出后处理器回调（CLI 层注入，避免循环依赖） |
 
 #### 物理层焊死原则
 
@@ -649,9 +741,33 @@ retryWithBackoff, CircuitBreaker, RetryOptions, CircuitBreakerOptions
 LoopHarness, LoopHarnessConfig, DynamicExample
 StepLoopIteration, StepLoopResult, HarnessExecutionResult
 
+// Department (ADR-005)
+DepartmentConfig, ContentType, AgentProfile, WriterConstraints
+OutputPipelineConfig, OutputPostProcessor, QualityGateConfig
+GoalTemplate
+
+// CompletionGuard (ADR-004)
+AcceptanceGoal, GoalStatus, GoalId, StopCondition
+CompletionGuard, CompletionGuardConfig, CompletionCheckResult
+VerificationMethod, EvidenceRecord, EvidenceContent, BlockerReason
+CommandVerification, TestVerification, LintVerification
+BrowserVerification, FileExistenceVerification, ContentMatchVerification, LLMAssertionVerification
+VerificationPipeline, VerificationExecutor, VerificationContext
+
 // 阈值配置
 THRESHOLDS, THRESHOLD_PROFILES, getThresholdsForProfile
 ThresholdKey, ThresholdProfile
+
+// Team Architecture (v0.3.1+)
+WorkerRole, IWorker, WorkerConfig
+TaskFeatures, ContentDomain, ITeam
+TeamCompositionRule, TeamWorkerDef, ITeamManager, TeamContext
+AgentFactory, IWorkerRegistry, WorkerRegistration
+WORKER_ROLES, LENGTH_THRESHOLDS
+
+TaskAnalyzer, TeamComposer, TeamManager, WorkerRegistry
+HistoryReader, DEFAULT_HISTORY_READER_CONFIG
+HistoryReaderConfig, HistoryPromptResult
 
 // Loop Module
 LoopModule, SimpleEvolutionAgent
@@ -674,6 +790,14 @@ StandardAgentContext, AgentExecutor
 ToolRegistry
 IPlannerAgent, IGeneratorAgent, IEvaluatorAgent, IEvolutionAgent
 IterationHandoff, GradingCriteria, GradingResult, StrategicDecision
+
+// Department (ADR-005)
+DepartmentConfig, ContentType, AgentProfile, WriterConstraints
+OutputPipelineConfig, QualityGateConfig
+
+// CompletionGuard (ADR-004)
+AcceptanceGoal, GoalStatus, GoalId, StopCondition
+VerificationMethod, EvidenceRecord, BlockerReason
 ```
 
 ### 子路径 `./interrogate`

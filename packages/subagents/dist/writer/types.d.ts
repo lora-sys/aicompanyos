@@ -18,6 +18,7 @@ export interface WriterInput {
     languagePreference?: string;
     criticFeedback?: string;
     rewriteRound?: number;
+    customSystemPrompt?: string;
 }
 export interface WriterOutput {
     content: string;

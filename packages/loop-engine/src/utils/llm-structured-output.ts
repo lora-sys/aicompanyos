@@ -22,7 +22,7 @@ import { z, type ZodSchema, type ZodError } from "zod";
 // ============================================================
 
 /** JSON 提取来源 */
-export type JSONExtractSource = "codeblock" | "array" | "object" | "raw";
+export type JSONExtractSource = "codeblock" | "array" | "object" | "raw" | "relaxed" | "brace-pair";
 
 /** JSON 提取结果 */
 export interface JSONExtractResult {
@@ -111,6 +111,31 @@ export function extractJSON(raw: string): JSONExtractResult | null {
     return { json: text, source: "raw" };
   }
 
+  // Level 5: 宽松模式 — 尝试从混合文本中提取最外层 JSON 对象
+  // 某些 LLM（如 LongCat）会在 JSON 前后添加解释性文字
+  const relaxedMatch = text.match(/\{[\s\S]*?"(?:score|colorPalette|typography|confidence)"[\s\S]*?\}/);
+  if (relaxedMatch) {
+    // 尝试修复常见问题：尾随逗号、注释等
+    let candidate = relaxedMatch[0]
+      .replace(/,\s*([}\]])/g, "$1")  // 移除尾随逗号
+      .replace(/\/\/.*$/gm, "")        // 移除单行注释
+      .replace(/\/\*[\s\S]*?\*\//g, ""); // 移除多行注释
+    if (isValidJSON(candidate)) {
+      return { json: candidate, source: "relaxed" };
+    }
+  }
+
+  // Level 6: 终极回退 — 尝试用大括号配对从全文提取
+  const braceStart = text.indexOf("{");
+  const braceEnd = text.lastIndexOf("}");
+  if (braceStart >= 0 && braceEnd > braceStart) {
+    const candidate = text.slice(braceStart, braceEnd + 1)
+      .replace(/,\s*([}\]])/g, "$1");
+    if (isValidJSON(candidate) && candidate.length > 20) {
+      return { json: candidate, source: "brace-pair" };
+    }
+  }
+
   return null;
 }
 
@@ -192,6 +217,14 @@ export class LLMStructuredOutput<T> {
       return this.handleFailure(
         `JSON 语法错误 (${extracted.source}): ${(parseError as Error).message}`
       );
+    }
+
+    // ★ Step 2.5: 预处理 — LLM 偶尔返回 array 而非 object
+    // 例如: [{"colorPalette": ...}] 而非 {"colorPalette": ...}
+    // 自动取第一个元素
+    if (Array.isArray(unknownData) && unknownData.length > 0) {
+      console.warn(`[LLMStructuredOutput] ⚠️ LLM 返回了 array (length=${unknownData.length})，自动取第一个元素`);
+      unknownData = unknownData[0];
     }
 
     // Step 3: Zod schema 验证

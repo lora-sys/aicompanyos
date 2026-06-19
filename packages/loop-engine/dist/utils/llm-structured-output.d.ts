@@ -16,7 +16,7 @@
  */
 import { type ZodSchema } from "zod";
 /** JSON 提取来源 */
-export type JSONExtractSource = "codeblock" | "array" | "object" | "raw";
+export type JSONExtractSource = "codeblock" | "array" | "object" | "raw" | "relaxed" | "brace-pair";
 /** JSON 提取结果 */
 export interface JSONExtractResult {
     /** 提取到的 JSON 字符串 */

@@ -32,13 +32,22 @@ export class WriterAgent {
 - 代码示例默认使用 TypeScript / JavaScript，与项目技术栈保持一致
 - 仅当用户明确指定其他编程语言时，才使用该语言编写示例
 - 即使引用第三方库的官方文档是 Python 示例，也应将其转写为 TypeScript 等价实现`;
-    constructor(tools, llmProvider) {
+    customSystemPrompt;
+    constructor(tools, llmProvider, customSystemPrompt) {
         this.tools = tools;
         this.llmProvider = llmProvider;
         // 防御性检查：确保 llmProvider 已正确传入
         if (!llmProvider) {
             throw new Error("WriterAgent 构造失败：llmProvider 参数不能为空");
         }
+        this.customSystemPrompt = customSystemPrompt;
+    }
+    /**
+     * 设置自定义 System Prompt（运行时动态切换 Writer 风格）
+     * @param prompt 自定义 system prompt 内容
+     */
+    setCustomSystemPrompt(prompt) {
+        this.customSystemPrompt = prompt;
     }
     // 实现 AgentExecutor 接口
     async execute(params) {
@@ -189,15 +198,17 @@ export class WriterAgent {
     // 步骤2：搜集资料（调用 web_search）
     async research(topic, context, taskId) {
         if (!this.tools.has("web_search")) {
-            console.warn("web_search 工具不可用");
+            console.warn("[WriterAgent] web_search 工具不可用，跳过搜索步骤");
             return [];
         }
+        console.log(`[WriterAgent] 开始搜索: "${topic.slice(0, 60)}..."`);
         // 提取关键词用于搜索
         const keywords = topic
             .split(/[，。！？；\s]+/)
             .filter((w) => w.length > 1)
             .slice(0, 5)
             .join(" ");
+        console.log(`[WriterAgent] 搜索关键词: "${keywords}"`);
         const result = await this.tools.execute({
             toolName: "web_search",
             params: { query: keywords },
@@ -205,17 +216,53 @@ export class WriterAgent {
             taskId,
         });
         if (!result.success || !result.data) {
-            console.warn("搜索失败:", result.error);
+            console.warn(`[WriterAgent] 搜索失败: ${result.error ?? "无数据返回"}`);
             return [];
         }
-        // 解析搜索结果为字符串数组
+        console.log(`[WriterAgent] ✅ 搜索成功! 返回数据类型: ${typeof result.data}, 长度: ${String(result.data).length} 字符`);
+        // ★ 解析搜索结果为字符串数组（防御性处理 MCP 返回的各种格式）
         const data = result.data;
-        return data.map((item) => `${item.title} - ${item.url}`);
+        // 情况1：期望格式 Array<{ title, url }>
+        if (Array.isArray(data)) {
+            const parsed = data.map((item) => {
+                if (typeof item === "string")
+                    return item;
+                const obj = item;
+                return `${obj.title ?? ""} - ${obj.url ?? ""}`;
+            }).filter(Boolean);
+            console.log(`[WriterAgent] 解析到 ${parsed.length} 条搜索结果 (Array格式)`);
+            return parsed;
+        }
+        // 情况2：MCP 返回纯文本（拼接后返回）
+        if (typeof data === "string") {
+            const parsed = data.split("\n").filter((line) => line.trim().length > 0);
+            console.log(`[WriterAgent] 解析到 ${parsed.length} 条搜索结果 (文本格式)`);
+            return parsed;
+        }
+        // 情况3：未知格式，转为字符串
+        console.warn(`[WriterAgent] 搜索返回数据格式异常: ${typeof data}, 尝试字符串化处理`);
+        return [String(data)];
     }
     // 步骤3：生成内容（核心 LLM 调用）
     async generateContent(input, researchResults, uiGuidance) {
         // 构造包含所有上下文的 prompt
-        let prompt = `## 任务描述\n${input.planStep.description}\n\n`;
+        let prompt = "";
+        // === ★ P0 主题防漂移：原始任务锚定（物理层焊死在 prompt 最顶部）===
+        // 无论 planStep.description 如何演变，原始任务是不可偏离的绝对参照系
+        const originalTopic = this.extractOriginalTopic(input);
+        if (originalTopic) {
+            prompt += `${"═".repeat(60)}\n`;
+            prompt += `## ★ 原始任务锚定（绝对不可偏离）\n`;
+            prompt += `${"═".repeat(60)}\n\n`;
+            prompt += `**用户的原始任务是：**\n> ${originalTopic}\n\n`;
+            prompt += `**【强制规则 — 违反将直接导致审核不通过】**\n`;
+            prompt += `- 你产出的所有内容必须紧密围绕上述原始任务展开\n`;
+            prompt += `- 禁止将主题偏移到其他技术领域或产品，即使该领域看起来"相关"\n`;
+            prompt += `- 每个章节、每个段落、每个例子都必须与原始任务直接相关\n`;
+            prompt += `- 如果发现自己在写与原始任务无关的内容，立即停止并拉回主题\n`;
+            prompt += `- 下方的"任务描述"只是执行建议，原始任务才是最高优先级\n\n`;
+        }
+        prompt += `## 任务描述\n${input.planStep.description}\n\n`;
         // === Loop Engineering: 重写模式标注 ===
         if (input.rewriteRound && input.rewriteRound > 1) {
             prompt += `> **⚠️ 这是第 ${input.rewriteRound} 轮重写 — 你必须根据下面的 Critic 反馈修改你的产出**\n\n`;
@@ -278,8 +325,9 @@ export class WriterAgent {
         prompt +=
             "\n请基于以上信息生成高质量的 Markdown 内容，确保内容完整、准确、易读。";
         // 调用 LLM 生成内容
+        const systemPrompt = input.customSystemPrompt ?? this.customSystemPrompt ?? WriterAgent.SYSTEM_PROMPT;
         const rawContent = await this.llmProvider.chat([
-            { role: "system", content: WriterAgent.SYSTEM_PROMPT },
+            { role: "system", content: systemPrompt },
             { role: "user", content: prompt },
         ]);
         // Topic Drift 防漂移检测
@@ -371,6 +419,45 @@ export class WriterAgent {
         }
         // 去重并返回最多 5 个关键词
         return [...new Set(found)].slice(0, 5);
+    }
+    /**
+     * ★ P0 主题防漂移：从输入上下文中提取原始任务主题
+     *
+     * 优先级：
+     * 1. interrogationResults 中的"原始任务"/"task"/"任务描述" 等维度
+     * 2. planStep.description（作为降级）
+     * 3. interrogationResults 的所有值拼接（最后手段）
+     *
+     * @returns 原始任务字符串，如果无法提取则返回 null
+     */
+    extractOriginalTopic(input) {
+        // 优先 1: 从拷问结果中查找明确的"任务"相关维度
+        if (input.context.interrogationResults) {
+            const taskKeys = [
+                "原始任务", "task", "任务描述", "taskInput",
+                "task_description", "用户需求", "你的需求", "你想写什么",
+                "topic", "主题", "写作主题",
+            ];
+            for (const key of taskKeys) {
+                const value = input.context.interrogationResults[key];
+                if (value && typeof value === "string" && value.trim().length > 2) {
+                    return value.trim();
+                }
+            }
+        }
+        // 优先 2: planStep.description 本身（至少比没有强）
+        if (input.planStep.description && input.planStep.description.trim().length > 5) {
+            return input.planStep.description.trim();
+        }
+        // 优先 3: 拷问结果的所有值拼接（取第一个有实质内容的）
+        if (input.context.interrogationResults) {
+            for (const [, value] of Object.entries(input.context.interrogationResults)) {
+                if (typeof value === "string" && value.trim().length > 5) {
+                    return value.trim();
+                }
+            }
+        }
+        return null;
     }
     // 步骤4：写入文件
     async writeArtifact(content, expectedOutput, taskId) {

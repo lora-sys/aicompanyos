@@ -25,6 +25,7 @@ catch {
     // .env 不存在则跳过（环境变量可能已通过其他方式设置）
 }
 import { AICOSApp } from "./app.js";
+import { StdinBuffer } from "@earendil-works/pi-tui";
 /**
  * CLI 主入口函数
  * 支持的命令行参数：
@@ -69,29 +70,52 @@ export async function main() {
 }
 /**
  * 设置交互式输入监听
- * 从 stdin 逐行读取用户输入并分发给 app.handleInput()
+ *
+ * ★ 双模式统一架构：
+ * - TTY 模式：readline 逐行交互（兼容 pi-tui Input 组件）
+ * - 管道模式（非 TTY）：StdinBuffer 缓冲 + 行级分发到 handleInput()
+ *
+ * 两种模式最终都走 app.handleInput()，保证行为一致。
  */
 async function setupInteractiveInput(app) {
     // 检查是否在 TTY 环境中
     if (!process.stdin.isTTY) {
-        // 非 TTY 环境（如管道输入），读取全部输入后一次性提交
+        // ★ 非TTY（管道/重定向）模式：读取全部输入后按行分发
+        // 修复 Bug: 之前整个 stdin 当成一个字符串 submitTask，
+        //        导致 "/type 2\ntopic\nq" 被当成任务内容
         let input = "";
         process.stdin.setEncoding("utf-8");
+        // 使用 StdinBuffer 处理原始输入流（处理转义序列等）
+        const stdinBuffer = new StdinBuffer({ timeout: 10 });
         process.stdin.on("data", (chunk) => {
-            input += chunk;
+            // 先经过 StdinBuffer 处理完整序列
+            stdinBuffer.process(typeof chunk === "string" ? chunk : chunk.toString());
+            // 同时累积原始文本用于行级解析
+            input += typeof chunk === "string" ? chunk : chunk.toString();
         });
         process.stdin.on("end", () => {
             const trimmed = input.trim();
-            if (trimmed) {
-                app.submitTask(trimmed).finally(() => app.quit());
-            }
-            else {
+            if (!trimmed) {
                 app.quit();
+                return;
             }
+            // ★ 核心修复：按换行符分割，逐行走 handleInput()（与 TTY 模式同路径）
+            const lines = trimmed.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+            console.log(`[CLI] 管道模式: 接收到 ${lines.length} 行输入`);
+            // 顺序处理每一行（模拟交互模式的逐行行为）
+            (async () => {
+                for (const line of lines) {
+                    if (!app["running"])
+                        break; // 如果已退出则停止
+                    await app.handleInput(line);
+                }
+                // 所有行处理完毕后退出
+                app.quit();
+            })();
         });
         return;
     }
-    // TTY 环境：逐行交互
+    // TTY 环境：逐行交互（readline）
     const readline = await createReadlineInterface();
     const prompt = "aicos> ";
     readline.question(prompt, async (answer) => {

@@ -23,9 +23,19 @@ import {
   PiAILLMProvider,
 } from "@aicos/loop-engine";
 import { MemoryManager } from "@aicos/memory";
+import { MCPClientAdapter, EXA_MCP_CONFIG } from "@aicos/mcp";
 
 import { WriterAgent } from "@aicos/subagents/writer";
 import { CriticAgent } from "@aicos/subagents/critic";
+
+// ★ ADR-005: 内容产出部 — 部门配置
+import {
+  ContentProductionDepartment,
+  initDepartmentMemory,
+  contentProductionDept,
+  OutputPipeline,
+} from "@aicos/content-production";
+import type { ContentType, DepartmentConfig } from "@aicos/loop-engine";
 
 import type {
   CLIAppState,
@@ -35,7 +45,7 @@ import type {
 } from "./types.js";
 
 import { InterrogateModal } from "./components/interrogate-modal.js";
-import { buildHeaderData, formatHeaderString } from "./components/header.js";
+import { buildHeaderData, formatHeaderString, getStateDisplay } from "./components/header.js";
 import {
   buildLoopVisualizationData,
   formatLoopASCII,
@@ -47,13 +57,29 @@ import {
   formatEvolutionString,
 } from "./components/evolution-panel.js";
 
+// ★ pi-tui 组件库 — 终端 UI 原生组件
+import {
+  TUI,
+  Box,
+  Text,
+  Loader,
+  Markdown,
+  Input,
+  SelectList,
+  type Component,
+  ProcessTerminal,
+  StdinBuffer,
+} from "@earendil-works/pi-tui";
+
 /**
  * AI Company OS CLI 应用
  * 负责初始化所有组件、管理应用状态、协调 Loop 执行流程
  */
 export class AICOSApp {
-  /** TUI 实例（pi-tui 或 mock） */
-  private tui: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  /** TUI 实例（pi-tui 差分渲染引擎） */
+  private tui: TUI | null = null;
+  /** pi-tui Terminal 实例 */
+  private terminal: ProcessTerminal | null = null;
 
   /** 应用状态 */
   private state: CLIAppState;
@@ -106,6 +132,14 @@ export class AICOSApp {
   /** 拷问结果缓存（用于传递给规划阶段） */
   private cachedInterrogationResults: Record<string, string> = {};
 
+  // ★ ADR-005: 内容类型选择
+  /** 当前选中的内容格式 */
+  private selectedContentType: ContentType | null = null;
+  /** 当前激活的部门配置 */
+  private activeDepartmentConfig: DepartmentConfig | null = null;
+  /** 内容产出部实例 */
+  private contentDept = new ContentProductionDepartment();
+
   /** 是否正在运行 */
   private running: boolean = false;
 
@@ -140,8 +174,8 @@ export class AICOSApp {
       logs: [],
     };
 
-    // TUI 实例（延迟初始化）
-    this.tui = null;
+    // TUI 实例（延迟初始化，在 start() 中根据 TTY 环境决定）
+    // this.tui / this.terminal 已在属性声明中初始化为 null
   }
 
   /**
@@ -168,9 +202,37 @@ export class AICOSApp {
 
     this.addLog("info", "app", "引擎初始化完成");
 
-    // 初始化 MCP 连接状态（模拟）
-    this.state.mcpStatus.set("Exa Server", "disconnected");
-    this.addLog("info", "mcp", "MCP 连接已就绪");
+    // ★ 初始化 MCP 连接（Exa 搜索服务）
+    try {
+      const mcpAdapter = new MCPClientAdapter();
+      this.addLog("info", "mcp", `正在连接 Exa MCP Server (${EXA_MCP_CONFIG.url})...`);
+      const exaInfo = await mcpAdapter.connect(EXA_MCP_CONFIG);
+      this.addLog("info", "mcp", `✅ Exa MCP 已连接，发现 ${exaInfo.tools.length} 个工具: ${exaInfo.tools.map(t => t.name).join(", ")}`);
+
+      // 注册 MCP 工具到 ToolRegistry（自动创建 web_search 等别名）
+      this.toolRegistry.connectMCP(mcpAdapter);
+      this.addLog("info", "mcp", `✅ MCP 工具已注册到 ToolRegistry（含别名: web_search → exa_exa_web_search）`);
+
+      // 更新状态
+      this.state.mcpStatus.set("Exa Server", "connected");
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      this.addLog("warn", "mcp", `⚠️ Exa MCP 连接失败（非致命）: ${err}`);
+      this.addLog("warn", "mcp", `web_search 工具将不可用，WriterAgent 会跳过搜索步骤`);
+      this.state.mcpStatus.set("Exa Server", "error");
+    }
+
+    // ★ ADR-005: 初始化内容产出部专用记忆（design.mdx / self.jsonl / user.jsonl）
+    try {
+      const memResult = await initDepartmentMemory(process.cwd());
+      this.addLog("info", "department",
+        `内容产出部记忆初始化: design.mdx=${memResult.designMDX}, self.jsonl=${memResult.selfJSONL}, user.jsonl=${memResult.userJSONL}`
+      );
+    } catch (e) {
+      this.addLog("warn", "department",
+        `部门记忆初始化失败（非致命）: ${e instanceof Error ? e.message : e}`
+      );
+    }
   }
 
   /**
@@ -183,35 +245,248 @@ export class AICOSApp {
     this.running = true;
     this.addLog("info", "app", "AI Company OS 已启动");
 
-    // 首次渲染
-    this.render();
+    // ★ 初始化 pi-tui TUI（仅 TTY 环境）
+    if (process.stdin.isTTY) {
+      try {
+        this.terminal = new ProcessTerminal();
+        this.tui = new TUI(this.terminal, true); // showHardwareCursor=true
 
-    // 如果没有 TUI 实例，输出欢迎信息到控制台
+        // 构建初始组件树
+        this.rebuildLayout();
+
+        // 启动 TUI 渲染循环（pi-tui 自主管理差分渲染 + 输入分发）
+        this.tui.start();
+
+        this.addLog("info", "app", "✅ pi-tui TUI 已启动（差分渲染模式）");
+      } catch (e) {
+        const err = e instanceof Error ? e.message : String(e);
+        this.addLog("warn", "app", `⚠️ TUI 初始化失败，回退到终端模式: ${err}`);
+        this.tui = null;
+        this.terminal = null;
+      }
+    }
+
+    // 首次渲染（非 TUI 模式或 TUI 失败时回退）
     if (!this.tui) {
       console.log(formatWelcomeScreen());
+      this.showContentTypeMenu();
       console.log("\n输入任务描述开始，或输入 'q' 退出。\n");
     }
   }
 
   /**
-   * 主渲染循环
-   * 根据当前状态组装布局数据并调用 TUI 渲染
+   * 重建整个 TUI 组件树
+   * 在状态变化时调用，重新构建所有子组件
+   */
+  private rebuildLayout(): void {
+    if (!this.tui) return;
+
+    // 清空旧子组件
+    this.tui.clear();
+
+    // 构建新布局：Header → Main → Sidebar → Footer
+    this.tui.addChild(this.buildHeaderComponent());
+    this.tui.addChild(this.buildMainComponent());
+    this.tui.addChild(this.buildSidebarComponent());
+    this.tui.addChild(this.buildFooterComponent());
+  }
+
+  /**
+   * 主渲染入口
+   * TUI 模式：重建组件树并请求重绘
+   * 非TUI模式：回退到终端输出
    */
   render(): void {
-    const layout = this.buildLayout();
-
     if (this.tui) {
-      // 使用 pi-tui 渲染
-      try {
-        this.tui.render(layout);
-      } catch (e) {
-        // TUI 渲染失败时回退到终端输出
-        this.renderToTerminal();
-      }
+      // ★ pi-tui 模式：重建组件树（pi-tui 自动差分渲染）
+      this.rebuildLayout();
+      this.tui.requestRender();
     } else {
-      // 无 TUI 时直接输出到终端
+      // 回退模式：手写 ASCII art
       this.renderToTerminal();
     }
+  }
+
+  // ============================================================
+  // ★ pi-tui 组件构建方法（返回 Component 树）
+  // ============================================================
+
+  /** 构建顶栏组件: Box + Text（应用名 + 状态 + TaskID） */
+  private buildHeaderComponent(): Component {
+    const stateInfo = getStateDisplay(this.state.loopState);
+    const taskIdStr = this.state.currentTaskId ? ` | Task: ${this.state.currentTaskId.slice(0, 8)}` : "";
+    const headerText = ` AI Company OS v0.1.0 [${stateInfo.label}]${taskIdStr} `;
+
+    const box = new Box(1, 0, (t) => `\x1b[44;97m${t}\x1b[0m`);
+    box.addChild(new Text(headerText, 0, 0));
+    return box;
+  }
+
+  /** 构建主区域组件: 根据 mode 返回不同内容 */
+  private buildMainComponent(): Component {
+    const mode = this.getMainMode();
+
+    switch (mode) {
+      case "modal":
+        return this.buildModalComponent();
+      case "evolution": {
+        const evoData = buildEvolutionPanelData({ phase: "analyzing", progress: 50 });
+        // ★ Markdown 渲染进化面板
+        const mdContent = "## Evolution\n\n**Phase**: `" + evoData.phase + "'\n\nProgress: " + "█".repeat(Math.floor(evoData.progress / 5)) + "░".repeat(20 - Math.floor(evoData.progress / 5)) + " " + evoData.progress + "%\n";
+        const box = new Box(1, 1);
+        box.addChild(new Markdown(mdContent, 1, 1, {
+          heading: (t) => "\x1b[1;35m" + t + "\x1b[0m",
+          link: (t) => "\x1b[4;34m" + t + "\x1b[0m",
+          linkUrl: (t) => "\x1b[2;34m" + t + "\x1b[0m",
+          code: (t) => "\x1b[33m" + t + "\x1b[0m",
+          codeBlock: (t) => "\x1b[33m" + t + "\x1b[0m",
+          codeBlockBorder: (t) => "\x1b[90m" + t + "\x1b[0m",
+          quote: (t) => "\x1b[36m" + t + "\x1b[0m",
+          quoteBorder: (t) => "\x1b[90m" + t + "\x1b[0m",
+          hr: (t) => "\x1b[90m" + t + "\x1b[0m",
+          listBullet: (t) => "\x1b[90m" + t + "\x1b[0m",
+          bold: (t) => "\x1b[1m" + t + "\x1b[0m",
+          italic: (t) => "\x1b[3m" + t + "\x1b[0m",
+          strikethrough: (t) => "\x1b[9m" + t + "\x1b[0m",
+          underline: (t) => "\x1b[4m" + t + "\x1b[0m",
+        }));
+        return box;
+      }
+      case "summary": {
+        const box = new Box(1, 1);
+        box.addChild(new Text("✅ 任务完成！查看 artifacts/ 目录获取产出物。", 1, 1));
+        return box;
+      }
+      default: {
+        // loop 模式
+        const loopData = buildLoopVisualizationData({
+          currentState: this.state.loopState,
+        });
+        const box = new Box(1, 1);
+        box.addChild(new Text(formatLoopASCII(loopData), 1, 1));
+        return box;
+      }
+    }
+  }
+
+  /** 构建拷问 Modal 组件（Box overlay 风格） */
+  private buildModalComponent(): Component {
+    if (!this.activeInterrogateModal) {
+      return new Text("（无活跃 Modal）", 1, 1);
+    }
+
+    const renderResult = this.activeInterrogateModal.render();
+    if (renderResult.type === "question" && renderResult.card) {
+      const card = renderResult.card;
+      const lines: string[] = [];
+      lines.push(`┌─ 拷问向导 ─────────────────────────┐`);
+      lines.push(`│  ${card.stepLabel.padEnd(34)}│`);
+      lines.push(`│  ${card.progressDots.padEnd(34)}│`);
+      lines.push("│                                      │");
+      lines.push(`│  ${card.dimensionEmoji} ${card.dimensionLabel}`.padEnd(39) + "│");
+      lines.push("│                                      │");
+
+      if (card.collectedInfo.length > 0) {
+        lines.push("│  已收集信息:                          │");
+        for (const info of card.collectedInfo) {
+          lines.push(`│    • ${info.slice(0, 30).padEnd(30)}│`);
+        }
+        lines.push("│                                      │");
+      }
+
+      lines.push("│  问题:                                │");
+      const words = card.promptText.split(" ");
+      let line = "│    ";
+      for (const word of words) {
+        if ((line + word).length > 37) {
+          lines.push(line.padEnd(38) + "│");
+          line = "│    ";
+        }
+        line += word + " ";
+      }
+      lines.push(line.padEnd(38) + "│");
+
+      if (card.hints.length > 0) {
+        lines.push("│                                      │");
+        lines.push("│  提示:                                │");
+        for (const hint of card.hints.slice(0, 3)) {
+          lines.push(`│    - ${hint.slice(0, 30).padEnd(30)}│`);
+        }
+      }
+
+      lines.push("│                                      │");
+      lines.push(`│  > ${"_".repeat(30)}│`);
+      lines.push(`│  ${card.footerHints.padEnd(34)}│`);
+      lines.push("└──────────────────────────────────────┘");
+
+      return new Text(lines.join("\n"), 1, 1);
+    }
+
+    return new Text("（Modal 渲染中...）", 1, 1);
+  }
+
+  /** 构建侧边栏组件: MCP 状态 + 工具列表 */
+  private buildSidebarComponent(): Component {
+    const sidebarData = buildSidebarData({
+      mcpConnections: Array.from(this.state.mcpStatus.entries()).map(([name, status]) => ({
+        name,
+        status,
+        toolCount: status === "connected" ? 3 : 0,
+      })),
+    });
+
+    return new Text(formatSidebarString(sidebarData), 1, 1);
+  }
+
+  /** 构建底栏组件: 日志流 + 快捷键提示（★ pi-tui Markdown 富文本渲染） */
+  private buildFooterComponent(): Component {
+    const footerData = buildFooterData({ logs: this.state.logs });
+    const mdContent = AICOSApp.buildLogMarkdown(footerData);
+
+    return new Markdown(mdContent, 1, 1, {
+      heading: function(t: string) { return "\x1b[1;36m" + t + "\x1b[0m"; },
+      link: function(t: string) { return "\x1b[4;34m" + t + "\x1b[0m"; },
+      linkUrl: function(t: string) { return "\x1b[2;34m" + t + "\x1b[0m"; },
+      code: function(t: string) { return "\x1b[33m" + t + "\x1b[0m"; },
+      codeBlock: function(t: string) { return "\x1b[33m" + t + "\x1b[0m"; },
+      codeBlockBorder: function(t: string) { return "\x1b[90m" + t + "\x1b[0m"; },
+      quote: function(t: string) { return "\x1b[36m" + t + "\x1b[0m"; },
+      quoteBorder: function(t: string) { return "\x1b[90m" + t + "\x1b[0m"; },
+      hr: function() { return "\x1b[90m" + "─".repeat(50) + "\x1b[0m"; },
+      listBullet: function(t: string) { return "\x1b[90m" + t + "\x1b[0m"; },
+      bold: function(t: string) { return "\x1b[1m" + t + "\x1b[0m"; },
+      italic: function(t: string) { return "\x1b[3m" + t + "\x1b[0m"; },
+      strikethrough: function(t: string) { return "\x1b[9m" + t + "\x1b[0m"; },
+      underline: function(t: string) { return "\x1b[4m" + t + "\x1b[0m"; },
+    });
+  }
+
+  /**
+   * 构建 Markdown 格式的日志内容（独立静态方法，避免模板字符串中反引号嵌套问题）
+   */
+  private static buildLogMarkdown(footerData: import("./types.js").FooterArea): string {
+    const BT = String.fromCharCode(96); // 反引号
+    const recentLogs = footerData.logs.slice(-6);
+    let md = "**Logs**\n\n";
+
+    if (recentLogs.length === 0) {
+      md += "_暂无日志_\n";
+    } else {
+      for (let i =  0; i < recentLogs.length; i++) {
+        const log = recentLogs[i];
+        const icon = log.level === "error" ? "\u{1F534}" : log.level === "warn" ? "\u{1F7E1}" : "\u{1F7E2}";
+        const time = log.timestamp.slice(11, 19);
+        md += "- " + icon + " " + BT + "[" + time + "]" + BT + " **" + log.source + "**: " + log.message + "\n";
+      }
+    }
+
+    md += "\n---\n";
+    for (let i = 0; i < footerData.shortcuts.length; i++) {
+      if (i > 0) md += " | ";
+      const s = footerData.shortcuts[i];
+      md += "**" + s.key + "**: " + s.description;
+    }
+    return md;
   }
 
   /**
@@ -224,6 +499,19 @@ export class AICOSApp {
     // 全局快捷键
     if (trimmed.toLowerCase() === "q") {
       this.quit();
+      return;
+    }
+
+    // ★ ADR-005: 内容类型选择命令
+    const typeMatch = trimmed.match(/^\/(?:type|格式)\s+(\S+)$/i);
+    if (typeMatch) {
+      this.selectContentType(typeMatch[1] as ContentType);
+      return;
+    }
+
+    // /type 或 /格式 显示可用类型列表
+    if (trimmed === "/type" || trimmed === "/格式" || trimmed.toLowerCase() === "help") {
+      this.showContentTypeMenu();
       return;
     }
 
@@ -367,6 +655,159 @@ export class AICOSApp {
     this.render();
   }
 
+  // ★ ADR-005: 内容类型选择（部门路由核心）
+
+  /**
+   * 显示可用内容格式菜单
+   * ★ TUI 模式：使用 pi-tui SelectList overlay
+   * 非TUI模式：回退到 console.log
+   */
+  showContentTypeMenu(): void {
+    const types = this.contentDept.getAvailableTypes();
+
+    // ★ TUI 模式：用 SelectList overlay 替代 console.log
+    if (this.tui) {
+      const selectItems = types.map((t: { type: string; label: string; description: string }) => ({
+        value: t.type,
+        label: t.label,
+        description: t.description,
+      }));
+
+      const selectList = new SelectList(
+        selectItems,
+        Math.min(types.length, 8),
+        {
+          selectedPrefix: (t) => "\x1b[42;97m▸ " + t + "\x1b[0m",
+          selectedText: (t) => "\x1b[1m" + t + "\x1b[0m",
+          description: (t) => "\x1b[90m" + t + "\x1b[0m",
+          scrollInfo: (t) => "\x1b[2m" + t + "\x1b[0m",
+          noMatch: (t) => "\x1b[31m" + t + "\x1b[0m",
+        }
+      );
+
+      // 选择回调：自动选中并应用
+      selectList.onSelect = (item) => {
+        this.selectContentType(item.value);
+        if (this.tui) {
+          this.tui.hideOverlay(); // 关闭选择器
+        }
+      };
+
+      // ESC 取消
+      selectList.onCancel = () => {
+        if (this.tui) {
+          this.tui.hideOverlay();
+        }
+      };
+
+      // 显示为居中浮层
+      this.tui.showOverlay(selectList, {
+        width: "60%",
+        anchor: "center",
+      });
+
+      this.addLog("info", "department", "已打开格式选择器（pi-tui SelectList）");
+      return;
+    }
+
+    // 非 TTY 回退：原始 console.log
+    const current = this.selectedContentType
+      ? `\n  ✅ 当前选择: ${types.find((t: { type: string; label: string }) => t.type === this.selectedContentType)?.label ?? this.selectedContentType}`
+      : "\n  ⚪ 未选择（默认使用 article）";
+
+    console.log(`
+┌─ 内容产出部 — 格式选择 ──────────────────────────┐
+│                                                     │
+│  可用内容格式:                                       │${current}
+│                                                     │`);
+
+    for (let i = 0; i < types.length; i++) {
+      const t = types[i];
+      const marker = t.type === this.selectedContentType ? "▸" : " ";
+      console.log(`  ${marker} [${i + 1}] ${t.label.padEnd(18)} ${t.description}`);
+    }
+
+    console.log(`│                                                     │
+│  使用方式:                                            │
+│    /type 1 或 /type article     选择图文/长文          │
+│    /type 2 或 /type seed        选择种草/短图文        │
+│    /type 3 或 /type short-video 选择短视频脚本         │
+│    /type 4 或 /type newsletter  选择Newsletter/周报    │
+│                                                     │
+└─────────────────────────────────────────────────────┘`);
+  }
+
+  /**
+   * 选择内容格式并加载对应部门配置
+   *
+   * 这是 ADR-005 部门路由的核心方法：
+   * 1. 根据 contentType 获取 DepartmentConfig
+   * 2. 将配置注入 LoopHarness
+   * 3. 将 Writer Prompt 注入 WriterAgent
+   * 4. 将 Critic 维度注入 CriticAgent
+   */
+  selectContentType(type: string | ContentType): void {
+    // 支持数字快捷键 (1-4)
+    const typeMap: Record<string, ContentType> = {
+      "1": "article",
+      "2": "seed",
+      "3": "short-video",
+      "4": "newsletter",
+    };
+
+    const resolvedType = typeMap[type] ?? type as ContentType;
+    const validTypes = ContentProductionDepartment.SUPPORTED_TYPES;
+
+    if (!validTypes.includes(resolvedType)) {
+      this.addLog("warn", "department", `不支持的内容格式: "${type}"，可用: ${validTypes.join(", ")}`);
+      console.log(`\n⚠️ 不支持的内容格式: "${type}"\n   可用: ${validTypes.join(", ")}\n   输入 /type 查看列表\n`);
+      return;
+    }
+
+    try {
+      // 1. 获取部门配置
+      const deptConfig = this.contentDept.getConfig(resolvedType);
+      this.selectedContentType = resolvedType;
+      this.activeDepartmentConfig = deptConfig;
+
+      // 2. 注入 LoopHarness（含 departmentConfig + outputProcessor 回调）
+      this.loopHarness.setDepartmentConfig(deptConfig);
+
+      // ★ ADR-005: 注入 outputProcessor 回调 — 解决 loop-engine ↔ content-production 循环依赖
+      // CLI 层静态导入 OutputPipeline（cli → content-production 方向，无循环），
+      // 通过 setOutputProcessor() 闭包注入到 LoopHarness
+      if (deptConfig.outputPipeline) {
+        const pipelineConfig = deptConfig.outputPipeline;
+        this.loopHarness.setOutputProcessor(async (rawContent, ctx) => {
+          const pipeline = new OutputPipeline(pipelineConfig);
+          return pipeline.process(rawContent, ctx);
+        });
+        this.addLog("info", "department", "outputProcessor 回调已通过 setOutputProcessor() 注入");
+      }
+
+      // 3. 注入 WriterAgent customSystemPrompt
+      if (this.writerAgent) {
+        this.writerAgent.setCustomSystemPrompt(deptConfig.agentProfile.writerSystemPrompt);
+      }
+
+      // 4. 如果有专属 Critic 维度，更新 CriticAgent
+      if (this.criticAgent && deptConfig.agentProfile.criticDimensions) {
+        this.criticAgent.setCustomDimensions?.(deptConfig.agentProfile.criticDimensions);
+      }
+
+      const typeLabel = this.contentDept.getAvailableTypes().find((t: { type: string; label: string }) => t.type === resolvedType)?.label ?? resolvedType;
+      this.addLog("info", "department",
+        `已切换到内容产出部 → ${typeLabel} (${resolvedType})`
+      );
+      console.log(`\n✅ 已切换到: ${typeLabel}\n   Writer Prompt 已注入 | GoalTemplates 已加载 | OutputPipeline 已配置\n`);
+      this.render();
+    } catch (e) {
+      this.addLog("error", "department",
+        `部门配置加载失败: ${e instanceof Error ? e.message : e}`
+      );
+    }
+  }
+
   /**
    * 退出应用
    */
@@ -377,7 +818,7 @@ export class AICOSApp {
 
     if (this.tui) {
       try {
-        this.tui.quit();
+        this.tui.stop();
       } catch {
         // 忽略
       }
@@ -809,37 +1250,6 @@ export class AICOSApp {
       const message = error instanceof Error ? error.message : String(error);
       this.addLog("error", "evolve", `进化分析出错: ${message}`);
     }
-  }
-
-  /**
-   * 构建完整的 TUI 布局数据
-   */
-  private buildLayout() {
-    const header = buildHeaderData({
-      currentState: this.state.loopState,
-      taskId: this.state.currentTaskId,
-    });
-
-    const sidebar = buildSidebarData({
-      mcpConnections: Array.from(this.state.mcpStatus.entries()).map(([name, status]) => ({
-        name,
-        status,
-        toolCount: status === "connected" ? 3 : 0,
-      })),
-    });
-
-    const footer = buildFooterData({
-      logs: this.state.logs,
-    });
-
-    return {
-      header,
-      main: {
-        mode: this.getMainMode(),
-      },
-      sidebar,
-      footer,
-    };
   }
 
   /**

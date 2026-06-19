@@ -275,6 +275,7 @@ describe("EvidenceChain", () => {
         toolCalls: 0,
         snapshots: 0,
         reasonings: 0,
+        verifications: 0,
       });
       expect(meta.totalEntries).toBe(0);
 
@@ -294,6 +295,7 @@ describe("EvidenceChain", () => {
         toolCalls: 1,
         snapshots: 1,
         reasonings: 1,
+        verifications: 0,
       });
     });
 

@@ -15,6 +15,7 @@
  * - LoopModule: 抽象接口，任何实现 Planner/Generator/Evaluator 的 Agent 都可以接入
  */
 import type { GradingCriteria, GradingResult, StrategicDecision, IterationHandoff } from "./grading-criteria.js";
+import type { AcceptanceGoal, StopCondition, CompletionGuardConfig } from "../completion-guard/types.js";
 /** 规划器：将任务拆解为执行计划 */
 export interface IPlannerAgent<Input = any, Plan = any> {
     /** 生成执行计划 */
@@ -54,7 +55,7 @@ export interface IEvolutionAgent {
     }>;
 }
 export interface LoopModuleConfig {
-    /** 最大迭代次数（含首次） */
+    /** 最大迭代次数（含首次）— 作为安全阀保留，主停止由 CompletionGuard 控制 */
     maxIterations: number;
     /** 是否启用退化保护 */
     enableDegradationGuard: boolean;
@@ -64,6 +65,14 @@ export interface LoopModuleConfig {
     stagnationThreshold: number;
     /** Context Reset: 是否在每次迭代间重置 Generator 上下文 */
     useContextReset: boolean;
+    /** 是否启用 CompletionGuard（目标驱动停止条件） */
+    enableCompletionGuard?: boolean;
+    /** AcceptanceCriteria — 验收目标列表 */
+    acceptanceCriteria?: AcceptanceGoal[];
+    /** CompletionGuard 配置 */
+    completionGuardConfig?: Partial<CompletionGuardConfig>;
+    /** LLM Provider 包装函数 — 用于验证阶段的 LLM 断言 */
+    llmProviderFn?: (prompt: string) => Promise<string>;
 }
 export interface LoopIteration<TOutput = any> {
     /** 迭代轮次 (1-based) */
@@ -92,13 +101,26 @@ export interface LoopModuleResult<TOutput = any> {
     /** 最终是否优秀 */
     excellent: boolean;
     /** 总迭代次数 */
-    totalRounds: number;
+    totalIterations: number;
     /** 总耗时 ms */
     totalDurationMs: number;
     /** Evolution 分析结果（如果启用） */
     evolutionSummary?: {
         patternFound: string;
         suggestions: string[];
+    };
+    /** 目标完成度快照 */
+    goalSnapshot?: Array<{
+        goalId: string;
+        status: "pending" | "verifying" | "verified" | "failed" | "blocked" | "skipped";
+    }>;
+    /** 结构化停止条件（替代 stopReason 字符串） */
+    stopCondition?: StopCondition;
+    /** 完成进度 */
+    completionProgress?: {
+        totalGoals: number;
+        verifiedGoals: number;
+        progressPercent: number;
     };
 }
 /**
@@ -115,7 +137,7 @@ export interface LoopModuleResult<TOutput = any> {
  * });
  *
  * const result = await loop.run("写一篇关于 AI Agent 的技术博客");
- * console.log(result.passed, result.finalScore, result.totalRounds);
+ * console.log(result.passed, result.finalScore, result.totalIterations);
  * ```
  */
 export declare class LoopModule<TInput = string, TPlan = any, TOutput = any> {
@@ -125,6 +147,10 @@ export declare class LoopModule<TInput = string, TPlan = any, TOutput = any> {
     private evolution?;
     private criteria;
     private config;
+    /** ADR-004: 目标驱动完成度守护者 */
+    private completionGuard?;
+    /** 最新一轮 CompletionGuard 检查结果（供 shouldStop() 读取） */
+    private latestGuardResult;
     constructor(params: {
         planner: IPlannerAgent<TInput, TPlan>;
         generator: IGeneratorAgent<TPlan, TOutput>;
@@ -145,6 +171,21 @@ export declare class LoopModule<TInput = string, TPlan = any, TOutput = any> {
     private makeStrategicDecision;
     /** 判断是否应该停止 */
     private determineStopReason;
+    /**
+     * ★ ADR-004 目标驱动：统一停止条件判断
+     *
+     * 替代原来分散在 for 循环内的多个 break 条件，
+     * 将所有停止逻辑集中到 while 循环的条件判断中。
+     *
+     * 停止优先级（从高到低）：
+     *  1. CompletionGuard 结构化目标完成度（主导）
+     *  2. 质量达标（excellent / passed）
+     *  3. 退化保护（分数下降）
+     *  4. 安全阀（maxIterations 上限）
+     *
+     * @returns true = 应该停止，false = 继续迭代
+     */
+    private shouldStop;
     /** 推断当前战略方向 */
     private inferCurrentStrategy;
     /** 创建空的评估结果（当 Evaluator 失败时） */

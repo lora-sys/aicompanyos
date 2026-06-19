@@ -27,25 +27,30 @@ const uiUXTypographySchema = z.object({
   headingFont: z.string().default("-apple-system, BlinkMacSystemFont, sans-serif"),
   bodyFont: z.string().default("-apple-system, BlinkMacSystemFont, sans-serif"),
   headingSizes: z.record(z.string(), z.string()).default({ h1: "2.5rem", h2: "2rem", h3: "1.5rem" }),
-  lineHeight: z.string().default("1.6"),
-  letterSpacing: z.string().default("0"),
+  // ★ coerce: 允许 LLM 返回 number（如 1.6），自动转为 string
+  lineHeight: z.coerce.string().default("1.6"),
+  letterSpacing: z.coerce.string().default("0"),
   reasoning: z.string().default("默认排版设置"),
 });
 
 const uiUXLayoutSchema = z.object({
   template: z.string().default("单列布局"),
-  spacing: z.string().default("16px"),
+  // ★ coerce: 允许 LLM 返回 number（如 16），自动转为 string
+  spacing: z.coerce.string().default("16px"),
   componentStructure: z.array(z.string()).default(["header", "main", "footer"]),
   reasoning: z.string().default("默认布局模板"),
 });
 
 const uiUXDesignTokensSchema = z.object({
-  borderRadius: z.string().default("8px"),
-  shadow: z.string().default("0 2px 8px rgba(0,0,0,0.1)"),
-  paddingScale: z.string().default("8px"),
+  borderRadius: z.coerce.string().default("8px"),
+  // ★ coerce: LLM 有时返回 object（如 {value: "0 2px 8px"}），强制转为 string
+  shadow: z.coerce.string().default("0 2px 8px rgba(0,0,0,0.1)"),
+  // ★ coerce: 允许 LLM 返回 number（如 8），自动转为 string
+  paddingScale: z.coerce.string().default("8px"),
   reasoning: z.string().default("默认设计令牌"),
 });
 
+// ★ 顶层 Schema：增加 preprocess 步骤处理 LLM 返回 array 的边界情况
 const uiUXOutputSchema = z.object({
   colorPalette: uiUXColorPaletteSchema,
   typography: uiUXTypographySchema,
@@ -53,6 +58,20 @@ const uiUXOutputSchema = z.object({
   designTokens: uiUXDesignTokensSchema,
   overallGuidance: z.string().default("请根据具体场景调整上述设计参数。"),
   confidence: z.number().min(0).max(1).default(0.7),
+}).transform((data, ctx) => {
+  // ★ 后验证：检查关键字段是否为预期类型
+  const issues: string[] = [];
+  if (typeof data.designTokens?.shadow !== "string") {
+    issues.push("designTokens.shadow");
+  }
+  if (Array.isArray(data.layoutSuggestion?.componentStructure) === false && data.layoutSuggestion?.componentStructure !== undefined) {
+    issues.push("layoutSuggestion.componentStructure");
+  }
+  if (issues.length > 0) {
+    // 不抛错，仅标记 — 让 FallbackStrategy 处理
+    console.warn(`[UIUXProMaxSkill] Schema 后验警告: ${issues.join(", ")} 类型异常，将使用默认值`);
+  }
+  return data;
 });
 
 // 默认值（当 Zod 解析失败时使用）
@@ -104,12 +123,15 @@ const FALLBACK_UIUX_OUTPUT: UIUXSkillOutput = {
 const SKILL_SYSTEM_PROMPT = `你是一个专业的 UI/UX 设计师，精通 Material Design、Apple HIG、Ant Design 等主流设计系统。
 你的任务是根据任务类型和内容特征，提供结构化的设计建议。
 
-输出要求：
-1. 必须返回合法的 JSON 格式
-2. 色彩方案要考虑对比度和可访问性
-3. 排版建议要符合阅读习惯和视觉层次
-4. 布局建议要考虑响应式设计
-5. 设计令牌要保持一致性
+输出要求（极其重要）：
+1. 必须返回**一个且仅一个** JSON 对象（不是数组！不要用 [] 包裹）
+2. JSON 必须包含以下顶层字段：colorPalette, typography, layoutSuggestion, designTokens, overallGuidance, confidence
+3. colorPalette 包含：primary(主色), secondary(辅色), accent(强调色), background(背景), text(文字) — 均为 hex 色值字符串
+4. typography 包含：headingFont, bodyFont, headingSizes(对象), lineHeight, letterSpacing
+5. layoutSuggestion 包含：template, spacing, componentStructure(字符串数组)
+6. designTokens 包含：borderRadius, shadow, paddingScale
+7. overallGuidance 为字符串，confidence 为 0-1 的数字
+8. 用 markdown 代码块包裹: \`\`\`json ... \`\`\`
 
 参考原则：
 - 色彩：主色、辅色、强调色要有明确层次，背景与文字对比度 >= 4.5:1
@@ -223,6 +245,23 @@ ${this.buildPrompt(input)}
 
     if (result.success) {
       return result.data;
+    }
+
+    // ★ 安全网：如果提取到的是数组，取第一个元素尝试解析
+    const arrayMatch = response.match(/\[[\s\S]*?\]/);
+    if (arrayMatch) {
+      try {
+        const arr = JSON.parse(arrayMatch[0]);
+        if (Array.isArray(arr) && arr.length > 0 && typeof arr[0] === "object") {
+          const objectResult = this.parser.parse(JSON.stringify(arr[0]));
+          if (objectResult.success) {
+            console.warn("[UIUXProMaxSkill] 从数组中提取第一个元素作为设计建议");
+            return objectResult.data;
+          }
+        }
+      } catch {
+        // 忽略，继续 fallback
+      }
     }
 
     // 解析失败，返回低置信度兜底值

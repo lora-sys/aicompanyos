@@ -21,6 +21,7 @@ import type {
   PlanStep,
 } from "../types.js";
 import type { LLMProvider } from "../interrogate/types.js";
+import type { DepartmentConfig, ProcessedOutput } from "../department/types.js";
 import { ExecutionOrchestrator } from "../orchestrator/engine.js";
 import type {
   StepExecutionResult,
@@ -39,6 +40,8 @@ import type {
   IEvaluatorAgent,
   GradingCriteria,
 } from "../loop-module/index.js";
+import type { AcceptanceGoal } from "../completion-guard/types.js";
+import { GoalTemplateRegistry } from "../completion-guard/goal-templates.js";
 import { getThresholdsForProfile, type ThresholdProfile } from "../config/thresholds.js";
 
 // Critic 输出结构（用于 StepLoopIteration 和结果格式化）
@@ -76,6 +79,24 @@ export interface LoopHarnessConfig {
   maxReplans: number;
   /** 是否启用退化保护（score 下降则停止重写） */
   enableDegradationGuard: boolean;
+
+  // ★ ADR-005: 部门配置注入
+  /** 部门配置（内容产出部/研发部/运营部等的不同配置剖面） */
+  departmentConfig?: DepartmentConfig;
+
+  /**
+   * ★ ADR-005: 输出后处理器（由 CLI 层传入，避免循环依赖）
+   *
+   * 签名: (rawContent: string, context: { rawContent, metadata?, taskId? }) => Promise<ProcessedOutput>
+   *
+   * LoopHarness 不直接依赖 @aicos/content-production，
+   * 而是通过此函数实现 OutputPipeline 的执行。
+   */
+  outputProcessor?: (rawContent: string, context: {
+    rawContent: string;
+    metadata?: Record<string, unknown>;
+    taskId?: string;
+  }) => Promise<ProcessedOutput>;
 }
 
 /**
@@ -138,6 +159,10 @@ export interface HarnessExecutionResult {
   totalIterations: number;
   /** 总耗时 ms */
   totalDurationMs: number;
+
+  // ★ ADR-005: 经过 OutputPipeline 处理后的最终产物
+  /** 经过部门配置的后处理链处理后的交付物（仅当 departmentConfig.outputPipeline 存在时有值） */
+  processedOutput?: import("../department/types.js").ProcessedOutput;
 }
 
 const DEFAULT_CONFIG: LoopHarnessConfig = {
@@ -186,6 +211,14 @@ export class LoopHarness {
     this.llmProvider = llmProvider;
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.orchestrator = new ExecutionOrchestrator(toolRegistry);
+
+    // ★ ADR-005: 记录部门配置注入日志
+    if (this.config.departmentConfig) {
+      console.log(
+        `[LoopHarness] 部门配置已注入: ${this.config.departmentConfig.departmentName} ` +
+        `(${this.config.departmentConfig.contentType})`
+      );
+    }
   }
 
   /** 获取当前配置（只读） */
@@ -236,6 +269,35 @@ export class LoopHarness {
   }
 
   /**
+   * ★ ADR-005: 设置部门配置
+   *
+   * 由 CLI 层在用户选择内容格式后调用。
+   * 注入 DepartmentConfig 到 LoopHarness，影响：
+   * - extractGoalsForStep(): 部门 GoalTemplate 优先于通用模板
+   * - getOrCreateModule(): 部门验收标准和质量门槛注入 LoopModule
+   * - executeWithLoop(): OutputPipeline 后处理执行
+   */
+  setDepartmentConfig(config: import("../department/types.js").DepartmentConfig): void {
+    this.config.departmentConfig = config;
+    console.log(
+      `[LoopHarness] 部门配置已设置: ${config.departmentName} (${config.contentType})`
+    );
+  }
+
+  /**
+   * ★ ADR-005: 设置输出后处理器回调
+   *
+   * 由 CLI 层传入，避免 loop-engine 直接依赖 content-production 包。
+   * 回调签名与 LoopHarnessConfig.outputProcessor 一致。
+   */
+  setOutputProcessor(
+    processor: NonNullable<LoopHarnessConfig["outputProcessor"]>
+  ): void {
+    this.config.outputProcessor = processor;
+    console.log("[LoopHarness] outputProcessor 已设置");
+  }
+
+  /**
    * 检查是否可以使用 LoopModule 主路径
    */
   private canUseLoopModule(): boolean {
@@ -277,6 +339,23 @@ export class LoopHarness {
         enableEvolution: true, // v0.2.0: 启用 SimpleEvolutionAgent 参与Inner Loop决策
         stagnationThreshold: 1, // 连续 1 轮无改善就触发
         useContextReset: true,
+
+        // ★ ADR-004: CompletionGuard 集成
+        enableCompletionGuard: true,
+        acceptanceCriteria: this.extractGoalsForStep(step),
+        completionGuardConfig: {
+          maxEffort: this.config.maxRewrites * 4, // 与 maxRewrites 联动
+          verificationConcurrency: 3,
+          cacheVerifiedGoals: true,
+          // v0.3.1+: 质量门槛门控 — 使用 passThreshold 作为最低质量要求
+          // 解决「仅1轮迭代就停止」的问题：结构目标通过但质量不够时继续迭代
+          minQualityScore: this.currentProfile?.evaluatorPass ?? this.criteria?.passThreshold,
+        },
+
+        // ★ P0-2a: LLM Provider 对接 — 包装为 (prompt)=>Promise<string> 用于 LLMAssertionExecutor
+        llmProviderFn: this.llmProvider
+          ? (prompt: string) => this.llmProvider.chat([{ role: "user", content: prompt }])
+          : undefined,
       },
     });
 
@@ -430,12 +509,44 @@ export class LoopHarness {
 
     const allPassed = stepResults.every((r) => r.passed);
 
+    // ★ ADR-005: 执行 OutputPipeline（如果部门配置了输出管线）
+    let processedOutput: HarnessExecutionResult["processedOutput"] | undefined;
+    if (this.config.departmentConfig?.outputPipeline) {
+      try {
+        // 优先使用 CLI 层注入的 outputProcessor 回调（避免循环依赖）
+        if (this.config.outputProcessor) {
+          const rawContent = this.extractRawContent(finalOutputs);
+          if (rawContent) {
+            processedOutput = await this.config.outputProcessor(rawContent, {
+              rawContent,
+              metadata: {
+                title: this.config.departmentConfig.contentType,
+              },
+              taskId: context.taskId,
+            });
+            console.log(
+              `[LoopHarness] OutputPipeline 完成 (via outputProcessor): ${processedOutput!.format}` +
+              (processedOutput!.platform ? ` → ${processedOutput!.platform}` : "") +
+              ` (${processedOutput!.processorLog.length} 个处理器)`
+            );
+          }
+        } else {
+          console.warn(`[LoopHarness] departmentConfig.outputPipeline 已配置但 outputProcessor 未注入，跳过后处理。` +
+            `请在 CLI 层通过 LoopHarnessConfig.outputProcessor 传入处理函数。`);
+        }
+      } catch (e) {
+        // Pipeline 执行失败不阻断主流程
+        console.warn(`[LoopHarness] OutputPipeline 执行失败（非阻断）:`, e instanceof Error ? e.message : e);
+      }
+    }
+
     return {
       stepResults,
       finalOutputs,
       allPassed,
       totalIterations,
       totalDurationMs: Date.now() - startTime,
+      processedOutput,
     };
   }
 
@@ -533,10 +644,16 @@ export class LoopHarness {
 
     // 构建最终输出
     const bestOutputRaw = moduleResult.bestOutput;
+    const hasContent = bestOutputRaw != null &&
+      (typeof bestOutputRaw === "string"
+        ? (bestOutputRaw as string).length > 0
+        : Object.keys(bestOutputRaw as Record<string, unknown>).length > 0);
     const finalOutput: StepExecutionResult = {
       stepId,
       agentType: "writer",
-      success: moduleResult.passed,
+      // ★ 修复：只要有产出内容就标记 success=true（质量是否达标由 scored/passed 字段表达）
+      // 旧逻辑：success = moduleResult.passed（导致低分产出被丢弃，OutputPipeline 无法执行）
+      success: hasContent || moduleResult.passed,
       output: bestOutputRaw ?? {},
       durationMs: moduleResult.totalDurationMs,
     };
@@ -556,6 +673,24 @@ export class LoopHarness {
   // ============================================================
 
   /**
+   * ★ ADR-005: 从 finalOutputs 中提取原始文本内容
+   *
+   * 用于 OutputPipeline 的输入。
+   * 优先提取 content 字段，其次尝试序列化整个 output 对象。
+   */
+  private extractRawContent(finalOutputs: Record<string, unknown>): string | undefined {
+    // 遍历所有输出，找到第一个有内容的
+    for (const [key, value] of Object.entries(finalOutputs)) {
+      if (typeof value === "string" && value.length > 0) return value;
+      if (value && typeof value === "object") {
+        const obj = value as Record<string, unknown>;
+        if (typeof obj.content === "string" && obj.content.length > 0) return obj.content;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * 查找 Writer step 后紧跟的 Critic step
    */
   private findFollowingCriticStep(
@@ -572,5 +707,69 @@ export class LoopHarness {
       }
     }
     return null;
+  }
+
+  /**
+   * ★ ADR-004/005: 从 PlanStep 中提取验收目标
+   *
+   * 数据来源优先级：
+   * 1. step.metadata.acceptanceGoals — Planner 显式定义的目标（最高优先）
+   * 2. DepartmentConfig.goalTemplates — 部门专属模板（新! 第二优先）
+   * 3. GoalTemplateRegistry 自动匹配 — 根据步骤描述自动生成（兜底）
+   */
+  private static goalTemplateRegistry = new GoalTemplateRegistry();
+
+  private extractGoalsForStep(step: PlanStep): AcceptanceGoal[] {
+    // 1. 优先从 metadata 读取（最高优先）
+    const metadata = step.metadata as Record<string, unknown> | undefined;
+    const metaGoals = metadata?.acceptanceGoals as AcceptanceGoal[] | undefined;
+    if (metaGoals && Array.isArray(metaGoals) && metaGoals.length > 0) {
+      console.log(`[LoopHarness] Step "${step.stepId}": 从 metadata 提取 ${metaGoals.length} 个验收目标`);
+      return metaGoals;
+    }
+
+    // ★ ADR-005: 2. 检查部门专属 GoalTemplate（第二优先）
+    if (this.config.departmentConfig?.goalTemplates && this.config.departmentConfig.goalTemplates.length > 0) {
+      for (const template of this.config.departmentConfig.goalTemplates) {
+        // 检查 contentType 匹配和关键词匹配
+        const lowerDesc = step.description.toLowerCase();
+        const contentTypeMatch =
+          (template as any).contentType === "*" ||
+          (template as any).contentType === this.config.departmentConfig.contentType;
+
+        if (contentTypeMatch) {
+          const keywords = (template as any).match?.keywords as string[] | undefined;
+          const keywordMatch = !keywords || keywords.length === 0 ||
+            keywords.some((kw) => lowerDesc.includes(kw.toLowerCase()));
+
+          if (keywordMatch) {
+            const deptGoals = template.generate(step.stepId, step.description);
+            if (deptGoals.length > 0) {
+              console.log(
+                `[LoopHarness] Step "${step.stepId}": 部门模板生成 ${deptGoals.length} 个验收目标 ` +
+                `(${deptGoals.map((g) => g.id).join(", ")})`
+              );
+              return deptGoals;
+            }
+          }
+        }
+      }
+    }
+
+    // 3. 兜底 — 使用 GoalTemplateRegistry 内置通用模板
+    const templateGoals = LoopHarness.goalTemplateRegistry.generateGoals(
+      step.stepId,
+      step.agentType,
+      step.description
+    );
+
+    if (templateGoals.length > 0) {
+      console.log(
+        `[LoopHarness] Step "${step.stepId}": 通用模板自动生成 ${templateGoals.length} 个验收目标 ` +
+        `(${templateGoals.map((g) => g.id).join(", ")})`
+      );
+    }
+
+    return templateGoals;
   }
 }
