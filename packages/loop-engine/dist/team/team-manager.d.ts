@@ -11,9 +11,10 @@
  *
  * 文件位置：packages/loop-engine/src/team/team-manager.ts
  */
-import type { ITeam, ITeamManager, TeamContext } from "./types.js";
+import type { ITeam, ITeamManager, TeamContext, AgentFactory, WorkerFactoryDeps } from "./types.js";
 import { TaskAnalyzer } from "./task-analyzer.js";
 import { TeamComposer } from "./team-composer.js";
+import type { IWorkerRegistry } from "./types.js";
 /**
  * 团队经理 — 动态团队编排的核心类
  *
@@ -28,9 +29,12 @@ import { TeamComposer } from "./team-composer.js";
 export declare class TeamManager implements ITeamManager {
     private analyzer;
     private composer;
+    private registry;
+    private lastTeam;
     constructor(config: {
         rules: import("./types.js").TeamCompositionRule[];
         customAnalyzer?: TaskAnalyzer;
+        registry?: IWorkerRegistry;
     });
     /**
      * 分析任务特征 + 组建团队（核心方法）
@@ -56,7 +60,18 @@ export declare class TeamManager implements ITeamManager {
      * @param team composeTeam() 返回的团队
      * @returns agentType 字符串 → 空占位（需调用方填充实际 factory）
      */
-    createWorkerFactories(team: ITeam): Map<string, import("./types.js").AgentFactory>;
+    createWorkerFactories(team: ITeam): Map<string, AgentFactory>;
+    /**
+     * 返回团队中各 Worker 的 AgentFactory 映射（由 CLI 层调用）
+     *
+     * 遍历当前团队的 workers，从 WorkerRegistry 获取 defaultFactory，
+     * 如果 factory 存在且是函数，包装为 (ctx) => agent 格式返回。
+     * writer/critic 的 factory 由 LoopHarness.registerAgent 管理，不在此处返回。
+     *
+     * @param deps Worker 工厂依赖（LLM Provider + ToolRegistry）
+     * @returns agentType → AgentFactory 的映射
+     */
+    createWorkerFactoriesWithDeps(deps: WorkerFactoryDeps): Record<string, AgentFactory>;
     /**
      * 获取内部的分析器（用于自定义规则或调试）
      */

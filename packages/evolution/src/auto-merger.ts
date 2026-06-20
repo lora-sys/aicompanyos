@@ -1,7 +1,7 @@
 // 自动合并引擎 - 评估风险并合并低风险变更
 import type { SelfExperienceEntry } from "@aicos/memory";
-import type { IEvolutionDocWriter } from "./types";
-import type { DiffResult, DesignDiffItem, UserDiffItem, MergeResult } from "./types";
+import type { IEvolutionDocWriter } from "./types.js";
+import type { DiffResult, DesignDiffItem, UserDiffItem, MergeResult } from "./types.js";
 
 const DEFAULT_RISK_THRESHOLD = 0.8;
 

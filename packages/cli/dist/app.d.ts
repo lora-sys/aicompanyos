@@ -1,14 +1,13 @@
-import { type LLMProvider, type InterrogationSession } from "@aicos/loop-engine";
-import type { ContentType } from "@aicos/loop-engine";
+import { type LLMProvider, type ContentType } from "@aicos/loop-engine";
 /**
  * AI Company OS CLI 应用
  * 负责初始化所有组件、管理应用状态、协调 Loop 执行流程
  */
 export declare class AICOSApp {
-    /** TUI 实例（pi-tui 差分渲染引擎） */
-    private tui;
-    /** pi-tui Terminal 实例 */
-    private terminal;
+    /** TUI 管理器（封装 pi-tui 生命周期） */
+    private tuiManager;
+    /** 部门设置协调器（封装部门切换、团队组建、Agent 注册） */
+    private departmentSetup;
     /** 应用状态 */
     private state;
     /** Loop 状态机 */
@@ -17,10 +16,10 @@ export declare class AICOSApp {
     private loopContext;
     /** 拷问引擎 */
     private interrogateEngine;
+    /** 拷问阶段协调器 */
+    private interrogateCoordinator;
     /** 规划引擎 */
     private planEngine;
-    /** 编排器 */
-    private orchestrator;
     /** 验证引擎 */
     private verifyEngine;
     /** 回滚管理器 */
@@ -29,28 +28,34 @@ export declare class AICOSApp {
     private artifactManager;
     /** 记忆管理器（self.jsonl / user.jsonl / self.md / user.md） */
     private memoryManager;
-    /** 当前活跃的 Modal */
-    private activeInterrogateModal;
     /** LLM Provider */
     private llmProvider;
     /** 工具注册表 */
     private toolRegistry;
     /** Loop Harness（委托给 LoopModule） */
     private loopHarness;
+    /** 执行阶段协调器 */
+    private executionCoordinator;
     /** Writer Agent 实例 */
     private writerAgent;
     /** Critic Agent 实例 */
     private criticAgent;
-    /** 拷问结果缓存（用于传递给规划阶段） */
-    private cachedInterrogationResults;
-    /** 当前选中的内容格式 */
-    private selectedContentType;
-    /** 当前激活的部门配置 */
-    private activeDepartmentConfig;
-    /** 内容产出部实例 */
-    private contentDept;
+    /** Evolution Agent 实例 */
+    private evolutionAgent;
+    /** 进化阶段协调器 */
+    private evolutionCoordinator;
+    /** executeLoop 开始时间（用于进化阶段计算 executionDuration） */
+    private loopStartTime;
+    /** 最近一次 Critic 评估摘要（用于进化阶段沉淀） */
+    private lastCriticSummary?;
+    /** 最近一次 CompletionGuard 摘要（用于进化阶段沉淀） */
+    private lastGuardSummary?;
     /** 是否正在运行 */
     private running;
+    /** 轻量级证据收集器（从 LoopHarness 回调中收集，供进化阶段构造 IEvidenceReader） */
+    private collectedDecisions;
+    private collectedToolCalls;
+    private collectedVerifications;
     constructor(llmProvider?: LLMProvider);
     /**
      * 初始化应用
@@ -63,22 +68,27 @@ export declare class AICOSApp {
      */
     start(): Promise<void>;
     /**
-     * 重建整个 TUI 组件树
-     * 在状态变化时调用，重新构建所有子组件
-     */
-    private rebuildLayout;
-    /**
      * 主渲染入口
-     * TUI 模式：重建组件树并请求重绘
+     * TUI 模式：请求重绘
      * 非TUI模式：回退到终端输出
      */
     render(): void;
-    /** 构建顶栏组件: Box + Text（应用名 + 状态 + TaskID） */
-    private buildHeaderComponent;
     /** 构建主区域组件: 根据 mode 返回不同内容 */
     private buildMainComponent;
     /** 构建拷问 Modal 组件（Box overlay 风格） */
     private buildModalComponent;
+    /** ★ 构建执行进度组件（PLANNING/EXECUTING 状态下替代空白 Modal） */
+    private buildProgressComponent;
+    /**
+     * 追加流式内容到 Markdown 区域
+     * 委托给 TUIManager.appendStream()
+     */
+    private appendStream;
+    /**
+     * ★ 锁定/解锁输入框
+     * 委托给 TUIManager.setInputLocked()
+     */
+    private setInputLocked;
     /** 构建侧边栏组件: MCP 状态 + 工具列表 */
     private buildSidebarComponent;
     /** 构建底栏组件: 日志流 + 快捷键提示（★ pi-tui Markdown 富文本渲染） */
@@ -92,9 +102,18 @@ export declare class AICOSApp {
      * 分发到对应的处理器
      */
     handleInput(input: string): Promise<void>;
+    /** 是否为非交互模式（跳过拷问、不启动 TUI） */
+    private nonInteractiveMode;
     /**
-     * 提交新任务
-     * 触发完整的 Loop 执行流程
+     * 非交互模式入口
+     * 跳过 TUI 和拷问，直接执行任务
+     */
+    runNonInteractive(taskInput: string): Promise<void>;
+    /**
+     * 提交新任务（Claude Code 风格：流式显示执行过程）
+     *
+     * ★ 关键：executeLoop() 在后台运行（不 await），
+     * 让 TUI 渲染循环继续工作，这样 appendStream() 的内容才能实时显示。
      */
     submitTask(input: string): Promise<void>;
     /**
@@ -109,10 +128,6 @@ export declare class AICOSApp {
      */
     executeLoop(taskInput: string): Promise<void>;
     /**
-     * 显示拷问 Modal
-     */
-    showInterrogateModal(session: InterrogationSession): void;
-    /**
      * 关闭 Modal
      */
     closeModal(): void;
@@ -124,26 +139,24 @@ export declare class AICOSApp {
     showContentTypeMenu(): void;
     /**
      * 选择内容格式并加载对应部门配置
-     *
-     * 这是 ADR-005 部门路由的核心方法：
-     * 1. 根据 contentType 获取 DepartmentConfig
-     * 2. 将配置注入 LoopHarness
-     * 3. 将 Writer Prompt 注入 WriterAgent
-     * 4. 将 Critic 维度注入 CriticAgent
+     * 委托给 DepartmentSetup.selectContentType()
      */
-    selectContentType(type: string | ContentType): void;
+    selectContentType(type: string | ContentType): Promise<void>;
+    /**
+     * ★ 恢复原始 console 方法
+     * 委托给 TUIManager.restoreConsole()
+     */
+    private restoreConsole;
     /**
      * 退出应用
      */
     quit(): void;
     /**
-     * 运行拷问阶段
+     * 运行拷问阶段（Claude Code 风格：对话式，问题流式输出到上方）
+     *
+     * 委托给 InterrogationCoordinator，返回的 Promise 等待用户完成所有回答后 resolve。
      */
     private runInterrogationPhase;
-    /**
-     * 处理拷问 Modal 的用户输入
-     */
-    private handleInterrogateInput;
     /**
      * 运行规划阶段
      */
@@ -153,24 +166,16 @@ export declare class AICOSApp {
      */
     private runExecutionPhase;
     /**
-     * 产物后处理管线
+     * 用户偏好持久化
      *
-     * 将原始 .md 产物转换为多种输出格式。
-     * 当前支持：HTML（Markdown → 带样式的独立页面）
-     * 可扩展：在此处添加 PDF、DOCX、EPUB 等转换器
-     */
-    private runArtifactPipeline;
-    /**
-     * 进化记忆持久化
-     *
-     * 将本次 Loop 执行的经验写入 self.jsonl（系统经验）和 user.jsonl（用户偏好）。
-     * 这些 JSONL 文件是增量追加的，可从 self.md / user.md 重建。
+     * 将拷问结果写入 user.jsonl（用户偏好）。
+     * self.jsonl 和 capability 完全由 EvolutionAgent 通过 AutoMerger 负责，
+     * 此方法不再硬编码写入 self.jsonl，避免覆盖 EvolutionAgent 的分析结果。
      *
      * 数据来源：
-     * - 产物数量、迭代轮次、最终评分 → 经验条目
-     * - 任务类型、执行耗时 → 能力成熟度更新
+     * - 拷问结果 → user.jsonl 用户偏好字段（带去重检查）
      */
-    private persistEvolutionMemory;
+    private persistUserPreferences;
     /**
      * 运行验证阶段
      */
@@ -214,17 +219,8 @@ export declare class AICOSApp {
      */
     private renderToTerminal;
     /**
-     * 将 Modal 内容渲染到终端
-     */
-    private renderModalToTerminal;
-    /**
      * 添加日志条目
      */
     private addLog;
-    /**
-     * 创建默认 LLM Provider
-     * 从环境变量读取配置，强制使用真实 API（禁止 Mock）
-     */
-    private createDefaultLLMProvider;
 }
 //# sourceMappingURL=app.d.ts.map

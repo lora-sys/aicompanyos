@@ -1,4 +1,4 @@
-import type { LoopContext, ExecutionPlan, PlanStep } from "../types.js";
+import type { LoopContext, ExecutionPlan, PlanStep, WorkerRole } from "../types.js";
 import { ToolRegistry } from "../tool-registry/registry.js";
 import type {
   StepExecutionResult,
@@ -36,7 +36,7 @@ export class ExecutionOrchestrator {
    * 注册一个 Agent 工厂函数
    */
   registerAgent(
-    agentType: string,
+    agentType: WorkerRole | string,
     factory: (ctx: import("./types.js").OrchestratorAgentContext) => AgentExecutor
   ): void {
     this.agentFactories.set(agentType, factory);

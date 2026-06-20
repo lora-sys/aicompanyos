@@ -448,32 +448,55 @@ export class ContentMatchExecutor {
     async execute(method, ctx) {
         const cfg = method;
         const start = Date.now();
-        const targetPath = join(ctx.projectRoot, cfg.target);
         const pattern = typeof cfg.pattern === "string" ? new RegExp(cfg.pattern) : cfg.pattern;
         const antiPattern = cfg.antiPattern
             ? (typeof cfg.antiPattern === "string" ? new RegExp(cfg.antiPattern) : cfg.antiPattern)
             : undefined;
         try {
-            const content = await readFile(targetPath, "utf-8");
-            const lines = content.split("\n");
-            const matchedLines = [];
-            for (let i = 0; i < lines.length; i++) {
-                if (pattern.test(lines[i])) {
-                    matchedLines.push({
-                        file: cfg.target,
-                        line: i + 1,
-                        content: truncate(lines[i], 200),
-                    });
+            // ★ 支持 glob 模式 target（如 "**/*.md"）
+            const isGlob = /[*?[{]/.test(cfg.target);
+            let filePaths;
+            if (isGlob) {
+                const matches = await glob(cfg.target, {
+                    cwd: ctx.projectRoot,
+                    absolute: true,
+                    nodir: true,
+                });
+                filePaths = matches;
+            }
+            else {
+                filePaths = [join(ctx.projectRoot, cfg.target)];
+            }
+            const allMatchedLines = [];
+            let allContent = "";
+            for (const fp of filePaths) {
+                try {
+                    const content = await readFile(fp, "utf-8");
+                    allContent += content + "\n";
+                    const lines = content.split("\n");
+                    const relPath = relative(ctx.projectRoot, fp);
+                    for (let i = 0; i < lines.length; i++) {
+                        if (pattern.test(lines[i])) {
+                            allMatchedLines.push({
+                                file: relPath,
+                                line: i + 1,
+                                content: truncate(lines[i], 200),
+                            });
+                        }
+                    }
+                }
+                catch {
+                    // 单个文件读取失败不中断整个验证
                 }
             }
             let antiPatternMatched = false;
             if (antiPattern) {
-                antiPatternMatched = antiPattern.test(content);
+                antiPatternMatched = antiPattern.test(allContent);
             }
-            const passed = matchedLines.length > 0 && !antiPatternMatched;
+            const passed = allMatchedLines.length > 0 && !antiPatternMatched;
             return makeEvidenceRecord("", "content_match", passed, {
                 type: "content_match",
-                matchedLines,
+                matchedLines: allMatchedLines,
                 antiPatternMatched,
             }, Date.now() - start);
         }

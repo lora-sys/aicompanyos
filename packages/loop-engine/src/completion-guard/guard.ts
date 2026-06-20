@@ -422,23 +422,10 @@ export class CompletionGuard {
     }
 
     // 规则 1: 所有非 skipped 的目标都已 verified → 交付
-    // v0.3.1+: 如果配置了 minQualityScore，还需要质量分数达标
+    // 注意：质量分数不在此层判断。minQualityScore 由 shouldStop() 的 P1 层（Critic 分数）控制。
+    // CompletionGuard 只管结构目标是否完成，质量由 Critic 层负责。
     const activeGoals = Array.from(this.goals.values()).filter((gs) => gs.state !== "skipped");
     if (activeGoals.length > 0 && verifiedGoals.length === activeGoals.length) {
-      // 质量门控检查
-      if (this.config.minQualityScore !== undefined) {
-        if (this.currentQualityScore === undefined || this.currentQualityScore < this.config.minQualityScore) {
-          console.log(
-            `[CompletionGuard] 质量未达标: score=${this.currentQualityScore ?? "N/A"}, ` +
-            `threshold=${this.config.minQualityScore} → 继续迭代`
-          );
-          // 结构目标已通过但质量不够 → 不停止，返回 null 继续迭代
-          return null;
-        }
-        console.log(
-          `[CompletionGuard] ✅ 质量达标: score=${this.currentQualityScore} >= ${this.config.minQualityScore}`
-        );
-      }
       return {
         reason: "all_goals_verified",
         verifiedGoals,

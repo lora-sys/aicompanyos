@@ -1,7 +1,9 @@
+import type { WorkerRole } from "../types.js";
+
 // 单步执行结果
 export interface StepExecutionResult {
   stepId: string;
-  agentType: string;
+  agentType: WorkerRole | string;
   success: boolean;
   output: unknown;
   error?: string;

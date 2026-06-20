@@ -31,8 +31,22 @@
       "source": "interrogation",
       "confidence": 0.85,
       "updatedAt": "2026-06-16T09:50:29.782Z"
+    },
+    {
+      "key": "主题方向",
+      "value": "智能体与其他ai 产品的对比优势",
+      "source": "interrogate",
+      "confidence": 0.9,
+      "updatedAt": "2026-06-19T12:12:45.539Z"
+    },
+    {
+      "key": "内容方向",
+      "value": "技术实现",
+      "source": "interrogate",
+      "confidence": 0.9,
+      "updatedAt": "2026-06-19T14:01:07.165Z"
     }
   ],
   "createdAt": "2026-06-14T16:38:15.183Z",
-  "lastUpdated": "2026-06-16T09:50:29.782Z"
+  "lastUpdated": "2026-06-19T14:01:07.165Z"
 }

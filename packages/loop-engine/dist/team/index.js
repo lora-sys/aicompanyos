@@ -6,7 +6,7 @@
 // 常量导出
 export { WORKER_ROLES, LENGTH_THRESHOLDS } from "./types.js";
 // 类导出
-export { TaskAnalyzer } from "./task-analyzer.js";
+export { TaskAnalyzer, findSimilarCases } from "./task-analyzer.js";
 export { TeamComposer } from "./team-composer.js";
 export { TeamManager } from "./team-manager.js";
 export { WorkerRegistry, globalWorkerRegistry } from "./worker-registry.js";

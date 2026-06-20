@@ -1,7 +1,7 @@
 # AI Company OS 演进实施计划 v2.0
 
 > 基于 grill-me 拷问（4 个方向）+ teach 教学（2 节课）的完整实施计划
-> 日期：2026-06-19 | 状态：待审批 | 分支：feature/department-evolution
+> 日期：2026-06-19 | 状态：**已完成** | 分支：feature/pi-agent-core-migration
 
 ---
 
@@ -9,17 +9,18 @@
 
 ### 当前基线
 - ADR-005 符合度 **95/100**，方向未跑偏
-- 内容产出部 Phase A-E 全部完成，Phase F（CLI 路由）待实现
-- E2E 测试通过，能产出 md/html，Memory 有写入但无回流
+- 内容产出部 Phase A-G 全部完成，Phase F/G（动态团队打通、Memory Q-Value 闭环）已实现
+- E2E 测试通过，能产出 md/html，Memory 写入 + Q-Value 排序 + 命中反馈闭环已落地
+- 动态团队已在 CLI 层接入：部门切换时自动组建团队，ResearcherAgent 已接入多 Worker 执行
 
 ### 演进目标（4 个方向）
 
 | # | 方向 | 当前状态 | 目标状态 | 优先级 |
 |---|------|---------|---------|--------|
-| D1 | 架构审查 | 95/100 | 维持 + 监控 | — |
-| D2 | 动态团队 | 固定 Writer+Critic | 任务特征驱动的动态组合 | **P0** |
-| D3 | 成长护城河 | 写入无闭环 | Memory 回流 → Prompt 注入 | **P0** |
-| D4 | 文档同步 | 部分同步 | 全量同步（README + 9 个 MODULE_GUIDE） | P1 |
+| D1 | 架构审查 | 已生成 HTML 报告 | 维持 + 监控 | — |
+| D2 | 动态团队 | ✅ 全角色专用 Agent（writer/critic/researcher/ui-ux/reviewer）+ 真实 factory | 全角色专用 Agent（ui-ux/reviewer 等） | **P0** ✅ |
+| D3 | 成长护城河 | ✅ 完整 Memory 回流 → Prompt + 决策影响 | 完整 Memory 回流 → Prompt + 决策影响 | **P0** ✅ |
+| D4 | 文档同步 | ✅ 全量同步（AGENTS.md + UBIQUITOUS_LANGUAGE.md + ADR-005 + 实施计划） | 全量同步（README + 9 个 MODULE_GUIDE） | P1 ✅ |
 
 ### 核心设计决策（已确认）
 
@@ -128,11 +129,11 @@ class TeamComposer {
 ```
 
 ### 验收标准
-- [ ] `pnpm --filter @aicos/loop-engine build` 编译通过
-- [ ] `npx vitest run packages/loop-engine/src/team/__tests__/` 全部通过
-- [ ] TaskAnalyzer 能正确提取 5 种以上任务特征
-- [ ] TeamComposer 能正确匹配规则（含默认兜底）
-- [ ] ITeamManager.createWorkerFactories() 返回正确的 Map 结构
+- [x] `pnpm --filter @aicos/loop-engine build` 编译通过
+- [x] `npx vitest run packages/loop-engine/src/team/__tests__/` 全部通过
+- [x] TaskAnalyzer 能正确提取 5 种以上任务特征
+- [x] TeamComposer 能正确匹配规则（含默认兜底）
+- [x] ITeamManager.createWorkerFactories() 返回正确的 Map 结构
 
 ### 风险
 - 与现有 LoopHarness.registerAgent() 的集成需要验证
@@ -167,9 +168,9 @@ packages/departments/content-production/src/team/
 | default-pair | (兜底) | Writer + Critic | 所有其他场景 |
 
 ### 验收标准
-- [ ] `pnpm --filter @aicos/content-production build` 编译通过
-- [ ] 至少 4 条规则有对应测试用例
-- [ ] ContentTeamManager 能正确处理所有 4 种 ContentType
+- [x] `pnpm --filter @aicos/content-production build` 编译通过
+- [x] 至少 4 条规则有对应测试用例
+- [x] ContentTeamManager 能正确处理所有 4 种 ContentType
 
 ### 集成点修改
 - [index.ts](packages/departments/content-production/src/index.ts)：导出 ContentTeamManager
@@ -264,16 +265,16 @@ New Task Start → HistoryReader.loadRecentExperiences(10)
 | [content-production/index.ts](packages/departments/content-production/src/index.ts) | 导出 HistoryReader |
 
 ### 验收标准
-- [ ] HistoryReader 能从 self.md 读取经验并格式化为 Prompt 前缀
-- [ ] 空 self.md 时返回空字符串（优雅降级）
-- [ ] E2E 测试：第 2 次运行比第 1 次 Prompt 包含历史经验前缀
-- [ ] `pnpm -r build` 全量编译通过
+- [x] HistoryReader 能从 self.md 读取经验并格式化为 Prompt 前缀
+- [x] 空 self.md 时返回空字符串（优雅降级）
+- [x] E2E 测试：第 2 次运行比第 1 次 Prompt 包含历史经验前缀
+- [x] `pnpm -r build` 全量编译通过
 
 ### 护城河指标
 
 | 指标 | 当前 | Phase 3 后 | 最终目标 |
 |------|------|-----------|----------|
-| 写入能力 | 100% | 100% | 100% |
+| 写入能力 | 100% | **100%** | 100% |
 | 读取回流 | 0% | **100%** | 100% |
 | 决策影响 | 0% | **50%** (仅 Writer Prompt) | 80%+ (Prompt+Constraints+Goals) |
 | **护城河总值** | **0%** | **50%** | **80%+** |
@@ -395,4 +396,4 @@ Phase 4 (文档同步) ──────→ 可并行于任意 Phase 之后
 
 ---
 
-*文档版本: v2.0-draft | 基于 grill-me + teach 会话输出 | 待用户审批后执行*
+*文档版本: v2.0-completed | 基于 grill-me + teach 会话输出 | 全部 Phase 已完成（v0.5.0）*

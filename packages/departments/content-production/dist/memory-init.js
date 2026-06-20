@@ -2,7 +2,14 @@
  * 内容产出部 — 记忆初始化脚本
  *
  * 将部门内置的 memory 种子文件（design.mdx / self.jsonl / user.jsonl）
- * 复制到项目根目录的 memory/ 目录下，供 EvolutionDocsManager 使用。
+ * 复制到项目运行时目录，供 EvolutionDocsManager 使用。
+ *
+ * 文件布局：
+ *   projectRoot/
+ *     design.mdx          ← EvolutionDocsManager 读取位置（项目根目录）
+ *     memory/
+ *       self.jsonl        ← EvolutionDocsManager JSONL 日志位置
+ *       user.jsonl        ← EvolutionDocsManager JSONL 日志位置
  *
  * 策略：append-only — 如果目标文件已存在，不覆盖。
  */
@@ -24,7 +31,9 @@ export async function initDepartmentMemory(projectRoot) {
         mkdirSync(targetMemoryDir, { recursive: true });
     }
     const result = {
-        designMDX: await safeCopyOrSkip(join(PACKAGE_MEMORY_DIR, "design.mdx"), join(targetMemoryDir, "design.mdx")),
+        // ★ design.mdx 放在项目根目录（EvolutionDocsManager 通过 "../design.mdx" 读取）
+        designMDX: await safeCopyOrSkip(join(PACKAGE_MEMORY_DIR, "design.mdx"), join(projectRoot, "design.mdx")),
+        // self.jsonl / user.jsonl 放在 memory/ 子目录
         selfJSONL: await safeAppendOrSkip(join(PACKAGE_MEMORY_DIR, "self.jsonl"), join(targetMemoryDir, "self.jsonl")),
         userJSONL: await safeAppendOrSkip(join(PACKAGE_MEMORY_DIR, "user.jsonl"), join(targetMemoryDir, "user.jsonl")),
     };

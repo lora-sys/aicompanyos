@@ -52,6 +52,7 @@ export interface AnomalyDetectorConfig {
     consensusFailureThreshold: number;
     replanFrequencyThreshold: number;
     maxRounds: number;
+    persistencePath?: string;
 }
 export interface PreferencePatterns {
     writingStyleChanges?: {
@@ -157,10 +158,27 @@ export interface IPatternExtractor {
     /** 设置轻量级模式（跳过 LLM 分析，仅使用规则引擎） */
     setLightweightMode(enabled: boolean): void;
 }
+export interface CriticSummary {
+    totalScore: number;
+    passed: boolean;
+    excellent: boolean;
+    dimensionScores: Array<{
+        dimensionId: string;
+        dimensionName: string;
+        rawScore: number;
+        maxScore: number;
+        comment: string;
+    }>;
+    reasoning?: string;
+}
 export interface IDiffGenerator {
     generateDesignDiff(currentDesign: DesignMDXData, patterns: UXDecisionPatterns): DesignDiffItem[];
     generateUserDiff(currentUser: UserMemoryData, patterns: PreferencePatterns): UserDiffItem[];
-    generateSelfDiff(currentSelf: SelfMemoryData, patterns: ExtractedPatterns, taskSuccess: boolean, taskType: string): Omit<SelfExperienceEntry, "entryId" | "timestamp">;
+    generateSelfDiff(currentSelf: SelfMemoryData, patterns: ExtractedPatterns, taskSuccess: boolean, taskType: string, criticSummary?: CriticSummary, guardSummary?: {
+        totalGoals: number;
+        verifiedGoals: number;
+        stopReason?: string;
+    }): Omit<SelfExperienceEntry, "entryId" | "timestamp">;
 }
 export interface IAutoMerger {
     mergeAll(diff: DiffResult): Promise<MergeResult>;

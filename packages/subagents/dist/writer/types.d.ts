@@ -19,6 +19,7 @@ export interface WriterInput {
     criticFeedback?: string;
     rewriteRound?: number;
     customSystemPrompt?: string;
+    originalTask?: string;
 }
 export interface WriterOutput {
     content: string;

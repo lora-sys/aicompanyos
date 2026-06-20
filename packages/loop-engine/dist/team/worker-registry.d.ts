@@ -42,7 +42,7 @@ export declare class WorkerRegistry implements IWorkerRegistry {
     /**
      * 根据 agentType 查找 Worker
      */
-    getByAgentType(agentType: string): WorkerRegistration | undefined;
+    getByAgentType(agentType: WorkerRole | string): WorkerRegistration | undefined;
     /**
      * 检查某角色是否有可用 Worker
      */

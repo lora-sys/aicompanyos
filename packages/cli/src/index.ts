@@ -55,19 +55,17 @@ export async function main(): Promise<void> {
     // 初始化
     await app.initialize();
 
-    // 启动 TUI
-    await app.start();
-
-    // 如果是非交互模式，直接处理传入的任务输入
+    // 如果是非交互模式，跳过 TUI，直接处理任务
     const nonInteractiveIndex = args.indexOf("--non-interactive");
     if (nonInteractiveIndex !== -1 && args[nonInteractiveIndex + 1]) {
       const taskInput = args[nonInteractiveIndex + 1];
-      await app.submitTask(taskInput);
-      app.quit();
+      // 非交互模式：直接 await executeLoop（不需要后台运行）
+      await app.runNonInteractive(taskInput);
       return;
     }
 
-    // 交互模式：监听 stdin 输入
+    // 交互模式：启动 TUI + 监听 stdin 输入
+    await app.start();
     setupInteractiveInput(app);
 
   } catch (error) {
@@ -130,7 +128,18 @@ async function setupInteractiveInput(app: AICOSApp): Promise<void> {
     return;
   }
 
-  // TTY 环境：逐行交互（readline）
+  // ★★★ TTY 环境：如果 TUIManager 已接管 stdin，不再创建 readline！
+  // pi-tui 的 ProcessTerminal.start() 已调用 setRawMode(true) 并注册 data 监听器，
+  // 如果同时创建 readline，两者会竞争 stdin 数据，导致：
+  // 1. readline close() 恢复 raw mode → pi-tui 无法接收输入
+  // 2. readline close() 后事件循环空转 → Node.js 进程退出
+  // 3. 两次 handleInput() 调用 → 状态混乱
+  if ((app as any).tuiManager?.isInitialized) {
+    // pi-tui 已接管输入，不需要 readline
+    return;
+  }
+
+  // 降级：无 pi-tui 时使用 readline 逐行交互
   const readline = await createReadlineInterface();
   const prompt = "aicos> ";
 

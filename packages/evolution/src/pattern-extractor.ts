@@ -1,6 +1,6 @@
 // 模式提取器 - 从 Evidence Chain 中提取进化模式
 import type { LLMProvider } from "@aicos/loop-engine/types";
-import type { IEvidenceReader } from "./types";
+import type { IEvidenceReader } from "./types.js";
 import type {
   DecisionTraceEntry,
   ToolCallTraceEntry,
@@ -11,7 +11,7 @@ import type {
   PreferencePatterns,
   ToolUsagePatterns,
   UXDecisionPatterns,
-} from "./types";
+} from "./types.js";
 
 // 单次 LLM 调用超时时间（ms）
 const LLM_CALL_TIMEOUT_MS = 30_000;

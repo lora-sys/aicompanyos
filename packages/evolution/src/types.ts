@@ -70,6 +70,7 @@ export interface AnomalyDetectorConfig {
   consensusFailureThreshold: number; // 共识失败率阈值，默认 0.6（60% 失败则触发）
   replanFrequencyThreshold: number; // Replan 频率阈值，默认 2 次
   maxRounds: number; // 最大轮次上限
+  persistencePath?: string; // 历史数据持久化路径（可选，设置后跨进程保留历史）
 }
 
 // === 提取的模式 ===
@@ -166,6 +167,14 @@ export interface IPatternExtractor {
   setLightweightMode(enabled: boolean): void;
 }
 
+export interface CriticSummary {
+  totalScore: number;
+  passed: boolean;
+  excellent: boolean;
+  dimensionScores: Array<{ dimensionId: string; dimensionName: string; rawScore: number; maxScore: number; comment: string }>;
+  reasoning?: string;
+}
+
 export interface IDiffGenerator {
   generateDesignDiff(currentDesign: DesignMDXData, patterns: UXDecisionPatterns): DesignDiffItem[];
   generateUserDiff(currentUser: UserMemoryData, patterns: PreferencePatterns): UserDiffItem[];
@@ -174,6 +183,8 @@ export interface IDiffGenerator {
     patterns: ExtractedPatterns,
     taskSuccess: boolean,
     taskType: string,
+    criticSummary?: CriticSummary,
+    guardSummary?: { totalGoals: number; verifiedGoals: number; stopReason?: string },
   ): Omit<SelfExperienceEntry, "entryId" | "timestamp">;
 }
 

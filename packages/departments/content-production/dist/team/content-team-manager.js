@@ -37,6 +37,10 @@ export class ContentTeamManager {
     inner;
     teamConfig;
     contentType;
+    /** 最近一次组建的团队（供 createWorkerFactoriesWithDeps 使用） */
+    lastTeam = null;
+    /** Worker 注册表引用（供 createWorkerFactoriesWithDeps 查找 factory） */
+    registry = null;
     constructor(config) {
         this.contentType = config.contentType;
         this.teamConfig = { ...DEFAULT_CONTENT_TEAM_CONFIG, ...config.teamConfig };
@@ -65,6 +69,8 @@ export class ContentTeamManager {
         console.log(`[ContentTeamManager] [${this.contentType}] 开始组队: "${taskInput.slice(0, 80)}..."`);
         // 委托给内部 TeamManager
         const team = await this.inner.composeTeam(taskInput, fullContext);
+        // 保存最近一次组建的团队（供 createWorkerFactoriesWithDeps 使用）
+        this.lastTeam = team;
         console.log(`[ContentTeamManager] 组队完成: ${team.workers.length} 人, ` +
             `规则="${team.matchedRuleId}", domain=${team.features.domain}`);
         return team;
@@ -79,11 +85,53 @@ export class ContentTeamManager {
         return this.inner.createWorkerFactories(team);
     }
     /**
+     * 返回团队中各 Worker 的 AgentFactory 映射（由 CLI 层调用）
+     *
+     * 遍历当前团队的 workers，从 WorkerRegistry 获取 defaultFactory，
+     * 如果 factory 存在且不是 null，包装为 (ctx) => agent 格式返回。
+     * writer/critic 的 factory 由 LoopHarness.registerAgent 管理，不在此处返回。
+     *
+     * @param deps Worker 工厂依赖（LLM Provider + ToolRegistry）
+     * @returns agentType → AgentFactory 的映射
+     */
+    createWorkerFactoriesWithDeps(deps) {
+        const team = this.lastTeam;
+        if (!team) {
+            console.warn("[ContentTeamManager] createWorkerFactoriesWithDeps: 尚未组建团队，返回空映射");
+            return {};
+        }
+        const factories = {};
+        for (const worker of team.workers) {
+            // writer/critic 由 LoopHarness.registerAgent 管理，跳过
+            if (worker.agentType === "writer" || worker.agentType === "critic")
+                continue;
+            // 从 WorkerRegistry 查找注册信息
+            const registration = this.registry?.getByAgentType(worker.agentType);
+            if (!registration || registration.defaultFactory === null)
+                continue;
+            const factory = registration.defaultFactory;
+            // 区分两种 factory 类型：AgentFactory（直接）或 (deps) => AgentExecutor（需注入依赖）
+            if (typeof factory === "function" && factory.length === 1) {
+                // (deps: WorkerFactoryDeps) => AgentExecutor — 需要注入依赖
+                const agent = factory(deps);
+                // 包装为 AgentFactory 格式：(ctx) => agent
+                factories[worker.agentType] = () => agent;
+            }
+            else if (typeof factory === "function") {
+                // AgentFactory — 直接使用
+                factories[worker.agentType] = factory;
+            }
+            console.log(`[ContentTeamManager] createWorkerFactoriesWithDeps: ${worker.agentType} → factory 已注册`);
+        }
+        return factories;
+    }
+    /**
      * 注册内容产出部的所有 Worker 到指定 Registry
      *
      * @param registry 目标 Registry（默认使用全局实例需手动导入）
      */
     registerWorkers(registry) {
+        this.registry = registry;
         registerContentWorkers(registry);
         console.log(`[ContentTeamManager] 已注册 ${createContentWorkerRegistrations().length} 个 Worker 到 Registry`);
     }

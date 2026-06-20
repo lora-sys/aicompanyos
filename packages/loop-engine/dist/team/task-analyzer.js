@@ -10,6 +10,7 @@
  *
  * 文件位置：packages/loop-engine/src/team/task-analyzer.ts
  */
+import { retryWithBackoff } from "../utils/retry.js";
 // ============================================================
 // 预置规则集
 // ============================================================
@@ -155,11 +156,40 @@ export class TaskAnalyzer {
             steps += 1;
         return Math.min(steps, 6); // 上限 6 个 Step
     }
-    /** 计算特征提取置信度 */
-    calculateConfidence(_input) {
-        // 规则引擎的置信度基于命中的关键词数量
-        // 简化版：固定高置信度（因为规则都是人工精心设计的）
-        return 0.85;
+    /** 计算特征提取置信度
+     *
+     * 基于命中的关键词覆盖率和输入长度动态计算：
+     * - 命中规则越多，置信度越高
+     * - 输入过短（<15字）时置信度降低
+     * - 返回 0.3 ~ 0.95 的动态值
+     */
+    calculateConfidence(input) {
+        let hits = 0;
+        const totalRules = 7; // 总规则数（domain + research + visual + length + quality + complexity + steps）
+        // 计算命中规则数
+        if (this.detectDomain(input) !== "general")
+            hits++;
+        if (RESEARCH_KEYWORDS.test(input))
+            hits++;
+        if (VISUAL_KEYWORDS.test(input))
+            hits++;
+        if (input.length > 30)
+            hits++; // 长度规则有足够文本
+        if (PREMIUM_KEYWORDS.test(input) || DRAFT_KEYWORDS.test(input))
+            hits++;
+        if (HIGH_COMPLEXITY_KEYWORDS.test(input) || LOW_COMPLEXITY_KEYWORDS.test(input))
+            hits++;
+        if (input.length >= 15)
+            hits++; // 输入长度足够
+        // 基础置信度：命中规则数 / 总规则数
+        let confidence = hits / totalRules;
+        // 输入过短惩罚
+        if (input.length < 15)
+            confidence *= 0.5;
+        else if (input.length < 30)
+            confidence *= 0.8;
+        // 限制范围 [0.3, 0.95]
+        return Math.max(0.3, Math.min(0.95, confidence));
     }
     /** 获取命中的规则 ID 列表（用于调试） */
     getMatchedRuleIds(input) {
@@ -174,5 +204,141 @@ export class TaskAnalyzer {
             ids.push("high-complexity");
         return ids;
     }
+    // ============================================================
+    // 混合模式：规则引擎 + LLM 兆底
+    // ============================================================
+    /**
+     * 混合模式分析：规则引擎优先 + 低置信度时 LLM 兆底
+     *
+     * 流程：
+     * 1. 规则引擎提取特征
+     * 2. 置信度 < 0.6 且有 LLM Provider → 调用 LLM 补充分析
+     * 3. LLM 调用失败时降级回规则引擎结果
+     *
+     * @param input 用户任务输入
+     * @param llmProvider 可选的 LLM Provider
+     * @returns 结构化的任务特征
+     */
+    async analyzeWithFallback(input, llmProvider) {
+        // Step 1: 规则引擎提取
+        const ruleFeatures = this.analyze(input);
+        // Step 2: 置信度足够，直接返回
+        if (ruleFeatures.confidence >= 0.6 || !llmProvider) {
+            return ruleFeatures;
+        }
+        // Step 3: 低置信度 + 有 LLM → 调用 LLM 补充分析
+        console.log(`[TaskAnalyzer] 置信度偏低 (${ruleFeatures.confidence.toFixed(2)})，调用 LLM 补充分析`);
+        try {
+            const llmFeatures = await retryWithBackoff(() => this.llmEnhance(input, ruleFeatures, llmProvider), { maxAttempts: 2, baseDelayMs: 1000 });
+            // 合并 LLM 结果到规则引擎结果上
+            return {
+                ...ruleFeatures,
+                domain: llmFeatures.domain ?? ruleFeatures.domain,
+                complexity: llmFeatures.complexity ?? ruleFeatures.complexity,
+                confidence: Math.max(ruleFeatures.confidence, 0.75), // LLM 增强后提升置信度
+                matchedRuleIds: [
+                    ...(ruleFeatures.matchedRuleIds ?? []),
+                    "llm-enhanced",
+                ],
+            };
+        }
+        catch (e) {
+            console.warn(`[TaskAnalyzer] LLM 增强失败，降级回规则引擎结果: ${e instanceof Error ? e.message : e}`);
+            return ruleFeatures;
+        }
+    }
+    /**
+     * LLM 增强分析 — 调用 LLM 提取规则和难以捕捉的特征
+     */
+    async llmEnhance(input, ruleFeatures, llmProvider) {
+        const prompt = `你是一个任务分析器。请分析以下用户任务，提取特征。
+
+用户任务: "${input}"
+
+规则引擎已识别的特征:
+- 领域: ${ruleFeatures.domain}
+- 复杂度: ${ruleFeatures.complexity}
+- 需要调研: ${ruleFeatures.needsResearch}
+- 质量档次: ${ruleFeatures.qualityTier}
+
+请用 JSON 格式返回你的判断（只返回 JSON，不要其他文字）:
+{
+  "domain": "tech|lifestyle|finance|education|general",
+  "complexity": "high|medium|low",
+  "reasoning": "简要说明你的判断依据"
+}`;
+        const response = await llmProvider.chat([
+            { role: "system", content: "你是一个精确的任务分析器，只返回 JSON 格式结果。" },
+            { role: "user", content: prompt },
+        ]);
+        try {
+            const parsed = JSON.parse(response.trim());
+            return {
+                domain: parsed.domain,
+                complexity: parsed.complexity,
+            };
+        }
+        catch {
+            console.warn("[TaskAnalyzer] LLM 返回非法 JSON，忽略增强结果");
+            return {};
+        }
+    }
+}
+/**
+ * 基于特征向量的余笛相似度匹配成功案例
+ *
+ * 将类别特征编码为数值向量，计算余笛相似度，
+ * 返回相似度超过阈值的案例按评分降序排列。
+ *
+ * @param cases 成功案例库
+ * @param features 当前任务特征
+ * @param topK 返回前 K 个匹配
+ * @returns 匹配的案例及其相似度分数
+ */
+export function findSimilarCases(cases, features, topK = 3) {
+    if (!cases || cases.length === 0)
+        return [];
+    const queryVec = encodeFeatures(features);
+    const scored = cases.map((c) => {
+        const caseVec = encodeFeatures(c.taskFeatures);
+        const similarity = cosineSimilarity(queryVec, caseVec);
+        return { case: c, similarity };
+    });
+    // 按相似度降序，过滤低分，取前 K 个
+    return scored
+        .filter((s) => s.similarity > 0.3)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, topK);
+}
+/** 将特征编码为数值向量 */
+function encodeFeatures(f) {
+    const domainMap = {
+        tech: 1, lifestyle: 2, finance: 3, education: 4, general: 0,
+    };
+    const complexityMap = {
+        high: 3, medium: 2, low: 1,
+    };
+    const qualityMap = {
+        premium: 3, standard: 2, draft: 1,
+    };
+    return [
+        domainMap[f.domain] ?? 0,
+        complexityMap[f.complexity] ?? 1,
+        f.needsResearch ? 1 : 0,
+        qualityMap[f.qualityTier] ?? 1,
+        f.confidence,
+    ];
+}
+/** 计算余笛相似度 */
+function cosineSimilarity(a, b) {
+    let dot = 0, normA = 0, normB = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+    }
+    if (normA === 0 || normB === 0)
+        return 0;
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 //# sourceMappingURL=task-analyzer.js.map

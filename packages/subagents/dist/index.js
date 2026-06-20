@@ -8,4 +8,6 @@ export { WriterAgent } from "./writer/agent.js";
 export { CriticAgent } from "./critic/agent.js";
 // Researcher Agent 导出（Loop Engineering: MCP 搜索）
 export { ResearcherAgent } from "./researcher/agent.js";
+// Reviewer Agent 导出（最终审查角色）
+export { ReviewerAgent } from "./reviewer/agent.js";
 //# sourceMappingURL=index.js.map

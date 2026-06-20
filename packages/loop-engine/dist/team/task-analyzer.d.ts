@@ -11,6 +11,7 @@
  * 文件位置：packages/loop-engine/src/team/task-analyzer.ts
  */
 import type { TaskFeatures } from "./types.js";
+import type { LLMProvider } from "../interrogate/types.js";
 interface FeatureRule<T = unknown> {
     key: string;
     pattern: RegExp;
@@ -52,10 +53,63 @@ export declare class TaskAnalyzer {
     private assessComplexity;
     /** 估算需要的 Step 数 */
     private estimateSteps;
-    /** 计算特征提取置信度 */
+    /** 计算特征提取置信度
+     *
+     * 基于命中的关键词覆盖率和输入长度动态计算：
+     * - 命中规则越多，置信度越高
+     * - 输入过短（<15字）时置信度降低
+     * - 返回 0.3 ~ 0.95 的动态值
+     */
     private calculateConfidence;
     /** 获取命中的规则 ID 列表（用于调试） */
     private getMatchedRuleIds;
+    /**
+     * 混合模式分析：规则引擎优先 + 低置信度时 LLM 兆底
+     *
+     * 流程：
+     * 1. 规则引擎提取特征
+     * 2. 置信度 < 0.6 且有 LLM Provider → 调用 LLM 补充分析
+     * 3. LLM 调用失败时降级回规则引擎结果
+     *
+     * @param input 用户任务输入
+     * @param llmProvider 可选的 LLM Provider
+     * @returns 结构化的任务特征
+     */
+    analyzeWithFallback(input: string, llmProvider?: LLMProvider): Promise<TaskFeatures>;
+    /**
+     * LLM 增强分析 — 调用 LLM 提取规则和难以捕捉的特征
+     */
+    private llmEnhance;
 }
+/** 简化版任务特征向量（与 SuccessCase.taskFeatures 兼容） */
+interface FeatureVector {
+    domain: string;
+    complexity: string;
+    needsResearch: boolean;
+    qualityTier: string;
+    confidence: number;
+}
+/** 成功案例引用（与 memory 包的 SuccessCase 兼容） */
+interface CaseRef {
+    taskFeatures: FeatureVector;
+    score: number;
+    contentType: string;
+    [key: string]: unknown;
+}
+/**
+ * 基于特征向量的余笛相似度匹配成功案例
+ *
+ * 将类别特征编码为数值向量，计算余笛相似度，
+ * 返回相似度超过阈值的案例按评分降序排列。
+ *
+ * @param cases 成功案例库
+ * @param features 当前任务特征
+ * @param topK 返回前 K 个匹配
+ * @returns 匹配的案例及其相似度分数
+ */
+export declare function findSimilarCases(cases: CaseRef[], features: TaskFeatures, topK?: number): Array<{
+    case: CaseRef;
+    similarity: number;
+}>;
 export {};
 //# sourceMappingURL=task-analyzer.d.ts.map

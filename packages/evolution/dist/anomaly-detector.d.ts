@@ -1,4 +1,4 @@
-import type { TaskMetrics, EvolutionSignal, AnomalyDetectorConfig } from "./types";
+import type { TaskMetrics, EvolutionSignal, AnomalyDetectorConfig } from "./types.js";
 export declare class AnomalyDetector {
     private config;
     private history;
@@ -14,5 +14,7 @@ export declare class AnomalyDetector {
     private detectConsensusFailure;
     private detectReplanFrequency;
     private detectUserModification;
+    private loadHistory;
+    private persistHistory;
 }
 //# sourceMappingURL=anomaly-detector.d.ts.map

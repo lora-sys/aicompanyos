@@ -12,6 +12,7 @@ export {
   type ExecutionPlan,
   type PlanStep,
   type TaskProfile,
+  type WorkerRole,
 } from "./types.js";
 
 // 核心类导出
@@ -62,6 +63,10 @@ export {
 export {
   ExecutionOrchestrator,
 } from "./orchestrator/engine.js";
+export {
+  GenericAgent,
+  type GenericAgentConfig,
+} from "./orchestrator/generic-agent.js";
 export {
   type StepExecutionResult,
   type OrchestratorConfig,
@@ -158,6 +163,20 @@ export type {
   StepLoopResult,
   HarnessExecutionResult,
 } from "./loop-harness/index.js";
+// ★ v0.5.0: 统一 Inner Loop 引擎接口
+export type {
+  IInnerLoopEngine,
+  InnerLoopConfig,
+  InnerLoopResult,
+  InnerLoopIteration,
+  InnerLoopStopReason,
+} from "./loop-harness/inner-loop-types.js";
+export {
+  LegacyInnerLoopDriver,
+} from "./loop-harness/legacy-driver.js";
+export {
+  PiAgentInnerLoopDriver,
+} from "./loop-harness/pi-agent-driver.js";
 
 // 统一阈值配置导出
 export { THRESHOLDS, THRESHOLD_PROFILES, getThresholdsForProfile } from "./config/thresholds.js";
@@ -262,9 +281,36 @@ export type {
   ProcessedOutput,
 } from "./department/index.js";
 
+// ★ pi-agent-core 集成 — 新一代循环引擎（基于 AgentHarness + Session + Compaction）
+export {
+  PiAgentLoopEngine,
+} from "./pi-agent-adapter.js";
+export type {
+  PiAgentLoopEngineConfig,
+  PiAgentIteration,
+  PiAgentLoopResult,
+  IPiWriterAgent,
+  IPiCriticAgent,
+} from "./pi-agent-adapter.js";
+
+// ★ StopPolicy — 统一停止策略模块
+export {
+  StopPolicy,
+  evaluateStop,
+  isSignificantImprovement,
+  DEFAULT_STOP_POLICY_CONFIG,
+} from "./stop-policy/policy.js";
+export type {
+  StopPolicyConfig,
+  StopContext,
+  StopDecision,
+  StopReason,
+} from "./stop-policy/policy.js";
+
 // ★ Dynamic Team Architecture — 动态团队抽象层
 export {
   TaskAnalyzer,
+  findSimilarCases,
   TeamComposer,
   TeamManager,
   WorkerRegistry,
@@ -273,7 +319,6 @@ export {
   DEFAULT_HISTORY_READER_CONFIG,
 } from "./team/index.js";
 export type {
-  WorkerRole,
   IWorker,
   WorkerConfig,
   TaskFeatures,
@@ -284,6 +329,7 @@ export type {
   ITeamManager,
   TeamContext,
   AgentFactory,
+  WorkerFactoryDeps,
   IWorkerRegistry,
   WorkerRegistration,
 } from "./team/index.js";

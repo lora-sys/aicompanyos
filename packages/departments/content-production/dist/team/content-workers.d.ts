@@ -11,12 +11,13 @@ import type { WorkerRegistration } from "@aicos/loop-engine";
  * 创建内容产出部的基础 Worker 注册列表
  *
  * 这些是部门启动时注册到 globalWorkerRegistry 的 Worker。
- * 实际的 AgentFactory 由 CLI 层或 LoopHarness 注入。
+ * writer/critic 的 factory 为 null（由 LoopHarness.registerAgent 管理）。
+ * researcher/ui-ux/reviewer 的 factory 接收 WorkerFactoryDeps 并返回 AgentExecutor。
  *
  * 设计原则：
- * - 此处只定义「有哪些 Worker 可用」和它们的元数据
- * - 不绑定具体的 Agent 实例（解耦）
- * - factory 使用 null 占位，由调用方替换
+ * - 此处定义「有哪些 Worker 可用」和它们的元数据
+ * - factory 函数由本模块提供，使用 GenericAgent 实现
+ * - writer/critic 不走此路径，由 CLI 层直接注册
  */
 export declare function createContentWorkerRegistrations(): WorkerRegistration[];
 /**

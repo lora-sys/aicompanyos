@@ -18,6 +18,7 @@ export {
   type EvolutionResult,
   type EvolutionDependencies,
   type EvolutionParams,
+  type CriticSummary,
   type IPatternExtractor,
   type IDiffGenerator,
   type IAutoMerger,

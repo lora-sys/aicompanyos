@@ -30,6 +30,11 @@ export declare class ArtifactManager {
      */
     getPath(name: string): string;
     /**
+     * 清理所有产物
+     * 删除输出目录中的所有文件，下次写入时自动重建
+     */
+    clearArtifacts(): Promise<void>;
+    /**
      * 确保输出目录存在
      * 不存在则递归创建
      */

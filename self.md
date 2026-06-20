@@ -166,12 +166,60 @@
       },
       "entryId": "f563b03f-213c-42d3-990b-2fb8fa3bbd99",
       "timestamp": "2026-06-19T09:35:10.612Z"
+    },
+    {
+      "taskType": "content-generation",
+      "pattern": "task-complete-61-artifacts",
+      "type": "success",
+      "lesson": "任务: unknown\n产出: 61 个 Artifact\n完成时间: 2026-06-19T10:38:53.074Z\n---\n2026-06-19T11:09:48.984Z 补充: 任务: unknown\n产出: 61 个 Artifact\n完成时间: 2026-06-19T11:09:48.970Z\n---\n2026-06-19T11:55:07.579Z 补充: 任务: 帮我写一篇 大模型小红书文章\n产出: 61 个 Artifact\n完成时间: 2026-06-19T11:55:07.566Z\n---\n2026-06-19T12:12:45.535Z 补充: 任务: 帮我写一篇关于智能体的小红书种草文\n产出: 61 个 Artifact\n完成时间: 2026-06-19T12:12:45.522Z",
+      "capabilityDelta": {
+        "addedCapabilities": [
+          "content-generation",
+          "loop-execution"
+        ]
+      },
+      "entryId": "b2f46482-2992-47bd-9091-ae1faa1fa067",
+      "timestamp": "2026-06-19T12:12:45.535Z",
+      "qValue": 1.1
+    },
+    {
+      "type": "success",
+      "taskType": "unknown",
+      "pattern": "无显著模式",
+      "lesson": "任务顺利完成，保持当前策略",
+      "entryId": "75f25196-4fde-4822-87e1-9d6a7fdd7bbb",
+      "timestamp": "2026-06-19T14:01:07.156Z"
+    },
+    {
+      "taskType": "content-generation",
+      "pattern": "task-complete-5-artifacts",
+      "type": "success",
+      "lesson": "任务: 帮我写一篇可以发布在推特的推文，主题agent skills !\n产出: 5 个 Artifact\n完成时间: 2026-06-19T14:01:07.162Z",
+      "capabilityDelta": {
+        "addedCapabilities": [
+          "content-generation",
+          "loop-execution"
+        ],
+        "discoveredLimitations": [],
+        "improvedStrategies": []
+      },
+      "entryId": "8ed1e98f-6666-4b6e-8498-3e772d06fd06",
+      "timestamp": "2026-06-19T14:01:07.163Z",
+      "qValue": 1.1
+    },
+    {
+      "type": "success",
+      "taskType": "content-creation",
+      "pattern": "高置信度决策占比: 3/4",
+      "lesson": "有效策略: 高置信度决策占比: 3/4",
+      "entryId": "3814f3f0-f074-424f-94af-f4513d061a27",
+      "timestamp": "2026-06-19T16:00:30.963Z"
     }
   ],
-  "totalTasksCompleted": 26,
-  "totalSuccessRate": 0.38461538461538464,
+  "totalTasksCompleted": 33,
+  "totalSuccessRate": 0.42424242424242425,
   "knownLimitations": [],
-  "lastUpdated": "2026-06-19T09:35:10.622Z",
+  "lastUpdated": "2026-06-20T07:28:54.210Z",
   "capabilities": [
     {
       "name": "blog-writing",
@@ -189,16 +237,16 @@
     },
     {
       "name": "content-generation",
-      "proficiency": 82,
-      "lastUsed": "2026-06-19T09:35:10.621Z",
-      "successCount": 8,
+      "proficiency": 100,
+      "lastUsed": "2026-06-19T14:01:07.164Z",
+      "successCount": 18,
       "failureCount": 0
     },
     {
       "name": "loop-execution",
-      "proficiency": 75,
-      "lastUsed": "2026-06-19T09:35:10.622Z",
-      "successCount": 8,
+      "proficiency": 100,
+      "lastUsed": "2026-06-19T14:01:07.165Z",
+      "successCount": 18,
       "failureCount": 0
     }
   ],

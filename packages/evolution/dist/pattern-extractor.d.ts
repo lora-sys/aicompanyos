@@ -1,6 +1,6 @@
 import type { LLMProvider } from "@aicos/loop-engine/types";
-import type { IEvidenceReader } from "./types";
-import type { ExtractedPatterns } from "./types";
+import type { IEvidenceReader } from "./types.js";
+import type { ExtractedPatterns } from "./types.js";
 export interface PatternExtractorConfig {
     /** 最大 LLM 调用次数，超过后使用规则引擎 fallback（默认 3） */
     maxLLMCalls?: number;

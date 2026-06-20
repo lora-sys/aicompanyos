@@ -86,7 +86,7 @@ export class WorkerRegistry implements IWorkerRegistry {
   /**
    * 根据 agentType 查找 Worker
    */
-  getByAgentType(agentType: string): WorkerRegistration | undefined {
+  getByAgentType(agentType: WorkerRole | string): WorkerRegistration | undefined {
     return this.agentTypeIndex.get(agentType);
   }
 

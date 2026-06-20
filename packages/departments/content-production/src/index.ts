@@ -34,6 +34,7 @@ import type {
 import { getCriticDimensions } from "./prompts/critic-dimensions.js";
 import { getDepartmentGoalTemplates } from "./goals/index.js";
 import { createDefaultOutputPipeline } from "./output/pipeline.js";
+import { ContentTeamManager } from "./team/index.js";
 import { ARTICLE_WRITER_PROMPT } from "./prompts/writer-article.js";
 import { SEED_WRITER_PROMPT } from "./prompts/writer-seed.js";
 import { SHORT_VIDEO_WRITER_PROMPT } from "./prompts/writer-short-video.js";
@@ -210,6 +211,18 @@ const QUALITY_GATES: Record<ContentType, QualityGateConfig> = {
 };
 
 // ============================================================
+// ContentType → ThresholdProfile 映射
+// ============================================================
+
+/** 各格式对应的阈值档位（对应 THRESHOLD_PROFILES 中的 key） */
+const THRESHOLD_PROFILE_MAP: Record<ContentType, string> = {
+  article: "technical-blog",   // 图文深度内容 → 技术博客档位
+  seed: "generic",             // 种草短图文 → 通用档位
+  "short-video": "generic",    // 短视频脚本 → 通用档位
+  newsletter: "generic",       // Newsletter → 通用档位
+};
+
+// ============================================================
 // ContentProductionDepartment 主类
 // ============================================================
 
@@ -277,6 +290,12 @@ export class ContentProductionDepartment {
 
       // === Quality Gate ===
       qualityGate: QUALITY_GATES[contentType],
+
+      // === Threshold Profile（阈值档位）===
+      thresholdProfile: THRESHOLD_PROFILE_MAP[contentType],
+
+      // === Team（动态团队）===
+      teamManager: new ContentTeamManager({ contentType }),
     };
   }
 
