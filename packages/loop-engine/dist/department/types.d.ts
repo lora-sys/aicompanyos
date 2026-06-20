@@ -306,6 +306,8 @@ export interface DepartmentConfig {
     toolSet?: string[];
     /** 部门专属质量门槛（为空则用默认 GradingCriteria） */
     qualityGate?: QualityGateConfig;
+    /** 部门专属动态团队管理器（为空则使用默认 Writer+Critic 双核） */
+    teamManager?: import("../team/types.js").ITeamManager;
 }
 /**
  * Pipeline 处理结果 — OutputPipeline 执行后的产物

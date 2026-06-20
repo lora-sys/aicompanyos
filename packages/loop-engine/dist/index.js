@@ -49,6 +49,8 @@ export { CompletionGuard, VerificationPipeline, CommandExecutor, TestExecutor, L
 export { CONTENT_TYPES, } from "./department/index.js";
 // ★ pi-agent-core 集成 — 新一代循环引擎（基于 AgentHarness + Session + Compaction）
 export { PiAgentLoopEngine, } from "./pi-agent-adapter.js";
+// ★ StopPolicy — 统一停止策略模块
+export { StopPolicy, evaluateStop, isSignificantImprovement, DEFAULT_STOP_POLICY_CONFIG, } from "./stop-policy/policy.js";
 // ★ Dynamic Team Architecture — 动态团队抽象层
 export { TaskAnalyzer, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, HistoryReader, DEFAULT_HISTORY_READER_CONFIG, } from "./team/index.js";
 export { WORKER_ROLES, LENGTH_THRESHOLDS } from "./team/index.js";

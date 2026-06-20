@@ -1,6 +1,6 @@
 import type { SelfExperienceEntry } from "@aicos/memory";
-import type { IEvolutionDocWriter } from "./types";
-import type { DiffResult, DesignDiffItem, UserDiffItem, MergeResult } from "./types";
+import type { IEvolutionDocWriter } from "./types.js";
+import type { DiffResult, DesignDiffItem, UserDiffItem, MergeResult } from "./types.js";
 export declare class AutoMerger {
     private evolutionDocs;
     private riskThreshold;

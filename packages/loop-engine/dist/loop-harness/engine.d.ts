@@ -70,6 +70,12 @@ export interface LoopHarnessConfig {
     }) => Promise<ProcessedOutput>;
     /** 是否使用基于 pi-agent-core 的新一代循环引擎（默认 false 保持向后兼容） */
     usePiAgentCore?: boolean;
+    /**
+     * pi-ai Model（启用 agentLoop 驱动时需要）。
+     * 若提供且 usePiAgentCore=true，PiAgentLoopEngine 将使用 runAgentLoop 驱动迭代；
+     * 否则退回到兼容的手搓循环。
+     */
+    model?: import("@earendil-works/pi-ai").Model<any>;
     /** Inner Loop 每次迭代开始时回调 */
     onIterationStart?: (iteration: number, stepId: string) => void;
     /** Writer 产出完成时回调 */

@@ -383,6 +383,10 @@ export interface DepartmentConfig {
   // === Quality Gate（质量门槛）===
   /** 部门专属质量门槛（为空则用默认 GradingCriteria） */
   qualityGate?: QualityGateConfig;
+
+  // === Team（动态团队）===
+  /** 部门专属动态团队管理器（为空则使用默认 Writer+Critic 双核） */
+  teamManager?: import("../team/types.js").ITeamManager;
 }
 
 // ============================================================

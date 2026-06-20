@@ -1,5 +1,7 @@
 // 异常检测器 - 检测是否需要触发深度进化
-import type { TaskMetrics, EvolutionSignal, AnomalyDetectorConfig } from "./types";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import type { TaskMetrics, EvolutionSignal, AnomalyDetectorConfig } from "./types.js";
 
 // 默认配置
 const DEFAULT_CONFIG: AnomalyDetectorConfig = {
@@ -20,6 +22,7 @@ export class AnomalyDetector {
 
   constructor(config?: Partial<AnomalyDetectorConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.loadHistory();
   }
 
   // 记录一次任务的指标
@@ -31,6 +34,11 @@ export class AnomalyDetector {
     } else {
       this.history.push({ taskId, metrics });
     }
+    // 保留最近 100 条记录
+    if (this.history.length > 100) {
+      this.history = this.history.slice(-100);
+    }
+    this.persistHistory();
   }
 
   // 检测是否需要深度进化，返回触发的信号列表
@@ -133,5 +141,31 @@ export class AnomalyDetector {
       threshold: 1.0,
       triggered: avgMods >= 1.0,
     };
+  }
+
+  // 从文件加载历史数据
+  private loadHistory(): void {
+    if (!this.config.persistencePath) return;
+    try {
+      const data = readFileSync(this.config.persistencePath, "utf-8");
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed)) {
+        this.history = parsed.slice(-100);
+      }
+    } catch {
+      // 首次运行或文件不存在，保持空数组
+    }
+  }
+
+  // 持久化历史数据到文件
+  private persistHistory(): void {
+    if (!this.config.persistencePath) return;
+    try {
+      const dir = dirname(this.config.persistencePath);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(this.config.persistencePath, JSON.stringify(this.history), "utf-8");
+    } catch {
+      // 非致命：持久化失败不影响主流程
+    }
   }
 }

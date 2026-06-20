@@ -37,6 +37,8 @@ export { CONTENT_TYPES, } from "./department/index.js";
 export type { ContentType, PlatformType, WriterConstraints, CriticDimension, StyleGuide, AgentProfile, DepartmentGoalTemplate, OutputPostProcessor, PlatformAdapterProcessor, MetadataInjector, FormatConverter, QualityCheckerProcessor, OutputPipelineConfig, DimensionWeightOverride, ExtraDimension, QualityGateConfig, DepartmentConfig, ProcessedOutput, } from "./department/index.js";
 export { PiAgentLoopEngine, } from "./pi-agent-adapter.js";
 export type { PiAgentLoopEngineConfig, PiAgentIteration, PiAgentLoopResult, IPiWriterAgent, IPiCriticAgent, } from "./pi-agent-adapter.js";
+export { StopPolicy, evaluateStop, isSignificantImprovement, DEFAULT_STOP_POLICY_CONFIG, } from "./stop-policy/policy.js";
+export type { StopPolicyConfig, StopContext, StopDecision, StopReason, } from "./stop-policy/policy.js";
 export { TaskAnalyzer, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, HistoryReader, DEFAULT_HISTORY_READER_CONFIG, } from "./team/index.js";
 export type { WorkerRole, IWorker, WorkerConfig, TaskFeatures, ContentDomain, ITeam, TeamCompositionRule, TeamWorkerDef, ITeamManager, TeamContext, AgentFactory, IWorkerRegistry, WorkerRegistration, } from "./team/index.js";
 export { WORKER_ROLES, LENGTH_THRESHOLDS } from "./team/index.js";

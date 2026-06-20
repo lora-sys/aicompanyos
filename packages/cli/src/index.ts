@@ -55,19 +55,17 @@ export async function main(): Promise<void> {
     // 初始化
     await app.initialize();
 
-    // 启动 TUI
-    await app.start();
-
-    // 如果是非交互模式，直接处理传入的任务输入
+    // 如果是非交互模式，跳过 TUI，直接处理任务
     const nonInteractiveIndex = args.indexOf("--non-interactive");
     if (nonInteractiveIndex !== -1 && args[nonInteractiveIndex + 1]) {
       const taskInput = args[nonInteractiveIndex + 1];
-      await app.submitTask(taskInput);
-      app.quit();
+      // 非交互模式：直接 await executeLoop（不需要后台运行）
+      await app.runNonInteractive(taskInput);
       return;
     }
 
-    // 交互模式：监听 stdin 输入
+    // 交互模式：启动 TUI + 监听 stdin 输入
+    await app.start();
     setupInteractiveInput(app);
 
   } catch (error) {

@@ -1,4 +1,4 @@
-import { type LLMProvider, type InterrogationSession } from "@aicos/loop-engine";
+import { type LLMProvider } from "@aicos/loop-engine";
 import type { ContentType } from "@aicos/loop-engine";
 /**
  * AI Company OS CLI 应用
@@ -17,6 +17,8 @@ export declare class AICOSApp {
     private loopContext;
     /** 拷问引擎 */
     private interrogateEngine;
+    /** 拷问阶段协调器 */
+    private interrogateCoordinator;
     /** 规划引擎 */
     private planEngine;
     /** 编排器 */
@@ -29,8 +31,6 @@ export declare class AICOSApp {
     private artifactManager;
     /** 记忆管理器（self.jsonl / user.jsonl / self.md / user.md） */
     private memoryManager;
-    /** 当前活跃的 Modal */
-    private activeInterrogateModal;
     /** 流式内容区 Markdown 组件（动态 setText 更新） */
     private streamMarkdown;
     /** 流式内容累积文本 */
@@ -39,8 +39,6 @@ export declare class AICOSApp {
     private inputComponent;
     /** 执行中输入框锁定标记 */
     private inputLocked;
-    /** ★ 拷问阶段等待 Promise 的 resolve 函数 */
-    private interrogateResolve;
     /** Header Text 组件引用（用于增量更新） */
     private headerText;
     /** StatusBar Text 组件引用（用于增量更新） */
@@ -51,20 +49,34 @@ export declare class AICOSApp {
     private toolRegistry;
     /** Loop Harness（委托给 LoopModule） */
     private loopHarness;
+    /** 执行阶段协调器 */
+    private executionCoordinator;
     /** Writer Agent 实例 */
     private writerAgent;
     /** Critic Agent 实例 */
     private criticAgent;
-    /** 拷问结果缓存（用于传递给规划阶段） */
-    private cachedInterrogationResults;
+    /** Evolution Agent 实例 */
+    private evolutionAgent;
+    /** 进化阶段协调器 */
+    private evolutionCoordinator;
+    /** executeLoop 开始时间（用于进化阶段计算 executionDuration） */
+    private loopStartTime;
     /** 当前选中的内容格式 */
     private selectedContentType;
     /** 当前激活的部门配置 */
     private activeDepartmentConfig;
     /** 内容产出部实例 */
     private contentDept;
+    /** 最近一次 Critic 评估摘要（用于进化阶段沉淀） */
+    private lastCriticSummary?;
+    /** 最近一次 CompletionGuard 摘要（用于进化阶段沉淀） */
+    private lastGuardSummary?;
     /** 是否正在运行 */
     private running;
+    /** 轻量级证据收集器（从 LoopHarness 回调中收集，供进化阶段构造 IEvidenceReader） */
+    private collectedDecisions;
+    private collectedToolCalls;
+    private collectedVerifications;
     constructor(llmProvider?: LLMProvider);
     /**
      * 初始化应用
@@ -150,6 +162,13 @@ export declare class AICOSApp {
      * 分发到对应的处理器
      */
     handleInput(input: string): Promise<void>;
+    /** 是否为非交互模式（跳过拷问、不启动 TUI） */
+    private nonInteractiveMode;
+    /**
+     * 非交互模式入口
+     * 跳过 TUI 和拷问，直接执行任务
+     */
+    runNonInteractive(taskInput: string): Promise<void>;
     /**
      * 提交新任务（Claude Code 风格：流式显示执行过程）
      *
@@ -169,10 +188,6 @@ export declare class AICOSApp {
      */
     executeLoop(taskInput: string): Promise<void>;
     /**
-     * 显示拷问 Modal
-     */
-    showInterrogateModal(session: InterrogationSession): void;
-    /**
      * 关闭 Modal
      */
     closeModal(): void;
@@ -191,7 +206,7 @@ export declare class AICOSApp {
      * 3. 将 Writer Prompt 注入 WriterAgent
      * 4. 将 Critic 维度注入 CriticAgent
      */
-    selectContentType(type: string | ContentType): void;
+    selectContentType(type: string | ContentType): Promise<void>;
     /** 保存原始 console 方法 */
     private _originalConsoleLog;
     private _originalConsoleWarn;
@@ -217,28 +232,9 @@ export declare class AICOSApp {
     /**
      * 运行拷问阶段（Claude Code 风格：对话式，问题流式输出到上方）
      *
-     * ★ 关键：返回 Promise，等待用户完成所有回答后才 resolve。
-     * 这样 executeLoop() 才会暂停在拷问阶段，不会直接跳到规划。
+     * 委托给 InterrogationCoordinator，返回的 Promise 等待用户完成所有回答后 resolve。
      */
     private runInterrogationPhase;
-    /**
-     * 显示下一个拷问问题到流式内容区
-     */
-    private showNextInterrogateQuestion;
-    /**
-     * 处理拷问对话输入（Claude Code 风格：流式对话）
-     *
-     * ★ 拷问完成时调用 this.interrogateResolve() 解除 Promise 等待，
-     * 让 executeLoop() 继续执行后续阶段。
-     */
-    private handleInterrogateInput;
-    /**
-     * ★ 解除拷问阶段 Promise 等待
-     *
-     * 在 handleInterrogateInput 中拷问完成时调用，
-     * 让 executeLoop() 继续执行后续阶段。
-     */
-    private resolveInterrogate;
     /**
      * 运行规划阶段
      */
@@ -248,24 +244,16 @@ export declare class AICOSApp {
      */
     private runExecutionPhase;
     /**
-     * 产物后处理管线
+     * 用户偏好持久化
      *
-     * 将原始 .md 产物转换为多种输出格式。
-     * 当前支持：HTML（Markdown → 带样式的独立页面）
-     * 可扩展：在此处添加 PDF、DOCX、EPUB 等转换器
-     */
-    private runArtifactPipeline;
-    /**
-     * 进化记忆持久化
-     *
-     * 将本次 Loop 执行的经验写入 self.jsonl（系统经验）和 user.jsonl（用户偏好）。
-     * 这些 JSONL 文件是增量追加的，可从 self.md / user.md 重建。
+     * 将拷问结果写入 user.jsonl（用户偏好）。
+     * self.jsonl 和 capability 完全由 EvolutionAgent 通过 AutoMerger 负责，
+     * 此方法不再硬编码写入 self.jsonl，避免覆盖 EvolutionAgent 的分析结果。
      *
      * 数据来源：
-     * - 产物数量、迭代轮次、最终评分 → 经验条目
-     * - 任务类型、执行耗时 → 能力成熟度更新
+     * - 拷问结果 → user.jsonl 用户偏好字段（带去重检查）
      */
-    private persistEvolutionMemory;
+    private persistUserPreferences;
     /**
      * 运行验证阶段
      */
@@ -319,6 +307,14 @@ export declare class AICOSApp {
     /** ★ 渲染节流：最多每 200ms 重绘一次 */
     private _renderTimer;
     private scheduleRender;
+    /**
+     * 为 pi-agent-core 的 agentLoop 构造 pi-ai Model。
+     *
+     * 使用 pi-ai 官方 getModel 获取 OpenAI 标准模型元数据，再覆盖 baseUrl
+     * 指向 OPENAI_API_BASE（兼容 LongCat 等 OpenAI-compatible 代理）。
+     * 若环境变量未配置或模型 ID 不被 pi-ai 识别，则回退到兼容手搓循环。
+     */
+    private createPiAiModel;
     /**
      * 创建默认 LLM Provider
      * 从环境变量读取配置，强制使用真实 API（禁止 Mock）

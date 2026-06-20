@@ -274,6 +274,20 @@ export type {
   IPiCriticAgent,
 } from "./pi-agent-adapter.js";
 
+// ★ StopPolicy — 统一停止策略模块
+export {
+  StopPolicy,
+  evaluateStop,
+  isSignificantImprovement,
+  DEFAULT_STOP_POLICY_CONFIG,
+} from "./stop-policy/policy.js";
+export type {
+  StopPolicyConfig,
+  StopContext,
+  StopDecision,
+  StopReason,
+} from "./stop-policy/policy.js";
+
 // ★ Dynamic Team Architecture — 动态团队抽象层
 export {
   TaskAnalyzer,

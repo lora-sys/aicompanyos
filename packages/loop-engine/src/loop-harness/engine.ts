@@ -109,6 +109,12 @@ export interface LoopHarnessConfig {
   // ★ pi-agent-core 集成 (v0.4.0)
   /** 是否使用基于 pi-agent-core 的新一代循环引擎（默认 false 保持向后兼容） */
   usePiAgentCore?: boolean;
+  /**
+   * pi-ai Model（启用 agentLoop 驱动时需要）。
+   * 若提供且 usePiAgentCore=true，PiAgentLoopEngine 将使用 runAgentLoop 驱动迭代；
+   * 否则退回到兼容的手搓循环。
+   */
+  model?: import("@earendil-works/pi-ai").Model<any>;
 
   // ★ v0.4.0: 执行进度回调（Claude Code 风格流式输出）
   /** Inner Loop 每次迭代开始时回调 */
@@ -693,11 +699,15 @@ export class LoopHarness {
 
       // 映射 stopReason → reason/passed
       const reasonMap: Record<LoopIteration["stopReason"], StepLoopIteration["reason"]> = {
+        continue: "continue",
         excellent: "quality_met",
         passed: "quality_met",
         max_iterations: "max_rewrites",
         degradation: "degradation",
         stagnation_pivot: "stable_plateau",
+        goals_verified: "quality_met",
+        goals_blocked: "error",
+        effort_exceeded: "error",
         error: "error",
       };
 
@@ -799,6 +809,7 @@ export class LoopHarness {
         llmProviderFn: this.llmProvider
           ? (prompt: string) => this.llmProvider.chat([{ role: "user", content: prompt }])
           : undefined,
+        model: this.config.model,
 
         // ★ v0.4.0: 执行进度回调（透传 CLI 层的回调）
         onIterationStart: (iter) => this.config.onIterationStart?.(iter, step.stepId),
@@ -858,9 +869,11 @@ export class LoopHarness {
 
       // PiAgentLoopEngine stopReason → StepLoopIteration reason 映射
       const reasonMap: Record<PiAgentIteration["stopReason"], StepLoopIteration["reason"]> = {
+        continue: "continue",
         excellent: "quality_met",
         passed: "quality_met",
         max_iterations: "max_rewrites",
+        effort_exceeded: "max_rewrites",
         degradation: "degradation",
         stagnation_pivot: "stable_plateau",
         error: "error",
@@ -974,11 +987,11 @@ export class LoopHarness {
         // 检查 contentType 匹配和关键词匹配
         const lowerDesc = step.description.toLowerCase();
         const contentTypeMatch =
-          (template as any).contentType === "*" ||
-          (template as any).contentType === this.config.departmentConfig.contentType;
+          template.match.contentType === "*" ||
+          template.match.contentType === this.config.departmentConfig.contentType;
 
         if (contentTypeMatch) {
-          const keywords = (template as any).match?.keywords as string[] | undefined;
+          const keywords = template.match.keywords;
           const keywordMatch = !keywords || keywords.length === 0 ||
             keywords.some((kw) => lowerDesc.includes(kw.toLowerCase()));
 

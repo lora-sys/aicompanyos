@@ -430,11 +430,15 @@ export class LoopHarness {
             };
             // 映射 stopReason → reason/passed
             const reasonMap = {
+                continue: "continue",
                 excellent: "quality_met",
                 passed: "quality_met",
                 max_iterations: "max_rewrites",
                 degradation: "degradation",
                 stagnation_pivot: "stable_plateau",
+                goals_verified: "quality_met",
+                goals_blocked: "error",
+                effort_exceeded: "error",
                 error: "error",
             };
             const reason = reasonMap[iter.stopReason] ?? "continue";
@@ -524,6 +528,7 @@ export class LoopHarness {
                 llmProviderFn: this.llmProvider
                     ? (prompt) => this.llmProvider.chat([{ role: "user", content: prompt }])
                     : undefined,
+                model: this.config.model,
                 // ★ v0.4.0: 执行进度回调（透传 CLI 层的回调）
                 onIterationStart: (iter) => this.config.onIterationStart?.(iter, step.stepId),
                 onWriterOutput: (content, iter) => this.config.onWriterOutput?.(content, iter),
@@ -571,9 +576,11 @@ export class LoopHarness {
             };
             // PiAgentLoopEngine stopReason → StepLoopIteration reason 映射
             const reasonMap = {
+                continue: "continue",
                 excellent: "quality_met",
                 passed: "quality_met",
                 max_iterations: "max_rewrites",
+                effort_exceeded: "max_rewrites",
                 degradation: "degradation",
                 stagnation_pivot: "stable_plateau",
                 error: "error",
@@ -673,10 +680,10 @@ export class LoopHarness {
             for (const template of this.config.departmentConfig.goalTemplates) {
                 // 检查 contentType 匹配和关键词匹配
                 const lowerDesc = step.description.toLowerCase();
-                const contentTypeMatch = template.contentType === "*" ||
-                    template.contentType === this.config.departmentConfig.contentType;
+                const contentTypeMatch = template.match.contentType === "*" ||
+                    template.match.contentType === this.config.departmentConfig.contentType;
                 if (contentTypeMatch) {
-                    const keywords = template.match?.keywords;
+                    const keywords = template.match.keywords;
                     const keywordMatch = !keywords || keywords.length === 0 ||
                         keywords.some((kw) => lowerDesc.includes(kw.toLowerCase()));
                     if (keywordMatch) {

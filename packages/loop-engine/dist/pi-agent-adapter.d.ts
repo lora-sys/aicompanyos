@@ -19,10 +19,12 @@
  *   5. 若继续: 注入 feedback 到下一轮 context
  */
 import type { Agent, AgentEvent } from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai";
 import type { GradingCriteria, GradingResult, StrategicDecision } from "./loop-module/grading-criteria.js";
 import type { AcceptanceGoal, StopCondition, CompletionGuardConfig } from "./completion-guard/types.js";
 import type { PlanStep } from "./types.js";
 import type { DepartmentConfig } from "./department/types.js";
+import { type StopReason } from "./stop-policy/policy.js";
 export interface PiAgentLoopEngineConfig {
     /** 最大迭代次数（安全阀，主停止由 CompletionGuard 控制） */
     maxIterations: number;
@@ -37,6 +39,12 @@ export interface PiAgentLoopEngineConfig {
     completionGuardConfig?: Partial<CompletionGuardConfig>;
     minQualityScore?: number;
     llmProviderFn?: (prompt: string) => Promise<string>;
+    /**
+     * ★ pi-ai Model（启用 agentLoop 驱动时需要）。
+     * 若提供，run() 将使用 pi-agent-core 的 runAgentLoop 驱动迭代；
+     * 否则退回到兼容的手搓循环。
+     */
+    model?: Model<any>;
     onIterationStart?: (iteration: number) => void;
     onWriterOutput?: (content: string, iteration: number) => void;
     onCriticResult?: (score: number, passed: boolean, suggestions: string[], iteration: number) => void;
@@ -47,7 +55,7 @@ export interface PiAgentIteration<TOutput = any> {
     output: TOutput;
     evaluation: GradingResult;
     strategicDecision: StrategicDecision;
-    stopReason: "excellent" | "passed" | "max_iterations" | "degradation" | "stagnation_pivot" | "error" | "goals_verified" | "goals_blocked";
+    stopReason: StopReason;
     durationMs: number;
     /** pi-agent-core 事件摘要（用于 TUI 渲染） */
     events: string[];
@@ -100,6 +108,7 @@ export declare class PiAgentLoopEngine<TPlan = PlanStep, TOutput = any> {
     private completionGuard?;
     private agent;
     private eventListeners;
+    private stopPolicy;
     constructor(params: {
         writer: IPiWriterAgent<TPlan, TOutput>;
         critic: IPiCriticAgent<TOutput>;
@@ -126,6 +135,25 @@ export declare class PiAgentLoopEngine<TPlan = PlanStep, TOutput = any> {
      */
     run(plan: TPlan, originalTask: string): Promise<PiAgentLoopResult<TOutput>>;
     /**
+     * 兼容性手搓循环（model 未提供时退回到此路径）
+     */
+    private runLegacy;
+    /** agentLoop 驱动模式下的跨 turn 状态 */
+    private agentLoopState?;
+    /**
+     * 使用 pi-agent-core 的 runAgentLoop 驱动 Writer → Critic 循环。
+     *
+     * 设计：把 Writer 和 Critic 实现为 AgentTool，由 agentLoop 负责 turn 调度、
+     * 事件流和重试；我们在 shouldStopAfterTurn / prepareNextTurn 钩子中
+     * 注入 StopPolicy 决策和 Critic feedback。
+     */
+    private runWithAgentLoop;
+    private agentLoopIterations;
+    private buildWriteTool;
+    private buildEvaluateTool;
+    private agentLoopShouldStop;
+    private agentLoopPrepareNextTurn;
+    /**
      * 订阅 pi-agent-core Agent 事件
      *
      * 用于将事件转发到 pi-tui 渲染层
@@ -135,10 +163,8 @@ export declare class PiAgentLoopEngine<TPlan = PlanStep, TOutput = any> {
     onEvent(listener: (event: AgentEvent) => void): () => void;
     /** 构建 System Prompt */
     private buildSystemPrompt;
-    /** 统一停止条件判断（ADR-004 目标驱动） */
+    /** 统一停止条件判断（由 StopPolicy 决定） */
     private shouldStop;
-    /** 确定本轮停止原因 */
-    private determineStopReason;
     /** 格式化评估反馈 */
     private formatFeedback;
     /** 战略决策 */

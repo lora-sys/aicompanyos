@@ -84,7 +84,7 @@ export interface LoopIteration<TOutput = any> {
     /** 战略决策 */
     strategicDecision: StrategicDecision;
     /** 终止原因 */
-    stopReason: "excellent" | "passed" | "max_iterations" | "degradation" | "stagnation_pivot" | "error";
+    stopReason: import("../stop-policy/policy.js").StopReason;
     /** 本轮耗时 ms */
     durationMs: number;
 }
@@ -151,6 +151,8 @@ export declare class LoopModule<TInput = string, TPlan = any, TOutput = any> {
     private completionGuard?;
     /** 最新一轮 CompletionGuard 检查结果（供 shouldStop() 读取） */
     private latestGuardResult;
+    /** 统一停止策略模块 */
+    private stopPolicy;
     constructor(params: {
         planner: IPlannerAgent<TInput, TPlan>;
         generator: IGeneratorAgent<TPlan, TOutput>;
@@ -169,21 +171,11 @@ export declare class LoopModule<TInput = string, TPlan = any, TOutput = any> {
     private formatFeedback;
     /** 做出战略决策 */
     private makeStrategicDecision;
-    /** 判断是否应该停止 */
-    private determineStopReason;
     /**
      * ★ ADR-004 目标驱动：统一停止条件判断
      *
-     * 替代原来分散在 for 循环内的多个 break 条件，
-     * 将所有停止逻辑集中到 while 循环的条件判断中。
-     *
-     * 停止优先级（从高到低）：
-     *  1. CompletionGuard 结构化目标完成度（主导）
-     *  2. 质量达标（excellent / passed）
-     *  3. 退化保护（分数下降）
-     *  4. 安全阀（maxIterations 上限）
-     *
-     * @returns true = 应该停止，false = 继续迭代
+     * 现在委托给 StopPolicy 模块处理，LoopModule 只负责读取最后一次迭代记录
+     * 并调用 stopPolicy.evaluate()。
      */
     private shouldStop;
     /** 推断当前战略方向 */

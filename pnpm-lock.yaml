@@ -23,6 +23,9 @@ importers:
       '@aicos/content-production':
         specifier: workspace:*
         version: link:../departments/content-production
+      '@aicos/evolution':
+        specifier: workspace:*
+        version: link:../evolution
       '@aicos/loop-engine':
         specifier: workspace:*
         version: link:../loop-engine

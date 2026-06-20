@@ -19,8 +19,11 @@
  *   5. 若继续: 注入 feedback 到下一轮 context
  */
 import { Agent as PiAgent } from "@earendil-works/pi-agent-core";
+import { runAgentLoop } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
 import { DEFAULT_WRITING_CRITERIA, } from "./loop-module/grading-criteria.js";
 import { CompletionGuard } from "./completion-guard/guard.js";
+import { StopPolicy, isSignificantImprovement } from "./stop-policy/policy.js";
 const DEFAULT_CONFIG = {
     maxIterations: 5,
     enableDegradationGuard: true,
@@ -48,11 +51,22 @@ export class PiAgentLoopEngine {
     agent = null;
     // ★ 事件监听器（用于 CLI/TUI 集成）
     eventListeners = [];
+    // ★ 统一停止策略
+    stopPolicy;
     constructor(params) {
         this.writer = params.writer;
         this.critic = params.critic;
         this.criteria = params.criteria ?? DEFAULT_WRITING_CRITERIA;
         this.config = { ...DEFAULT_CONFIG, ...params.config };
+        this.stopPolicy = new StopPolicy({
+            maxIterations: this.config.maxIterations,
+            enableDegradationGuard: this.config.enableDegradationGuard,
+            degradationThreshold: 10,
+            enableStagnationDetection: true,
+            stagnationThreshold: this.config.stagnationThreshold,
+            improvementThreshold: 3,
+            minQualityScore: this.config.minQualityScore,
+        });
         // 初始化 CompletionGuard
         if (this.config.enableCompletionGuard && this.config.acceptanceCriteria && this.config.acceptanceCriteria.length > 0) {
             this.completionGuard = new CompletionGuard(this.config.acceptanceCriteria, {
@@ -105,6 +119,16 @@ export class PiAgentLoopEngine {
      * 5. 若继续: 注入 feedback → 下轮迭代
      */
     async run(plan, originalTask) {
+        // ★ Phase C: 若 caller 提供了 pi-ai Model，则真正使用 agentLoop 驱动
+        if (this.config.model) {
+            return this.runWithAgentLoop(plan, originalTask);
+        }
+        return this.runLegacy(plan, originalTask);
+    }
+    /**
+     * 兼容性手搓循环（model 未提供时退回到此路径）
+     */
+    async runLegacy(plan, originalTask) {
         const startTime = Date.now();
         const iterations = [];
         let bestOutput = null;
@@ -121,7 +145,7 @@ export class PiAgentLoopEngine {
             iteration++;
             const iterStart = Date.now();
             const iterEvents = [];
-            console.log(`[PiAgentLoopEngine] Iteration ${iteration} [pi-agent-core]`);
+            console.log(`[PiAgentLoopEngine] Iteration ${iteration} [legacy]`);
             // ★ 回调：迭代开始
             this.config.onIterationStart?.(iteration);
             try {
@@ -131,8 +155,12 @@ export class PiAgentLoopEngine {
                     : undefined;
                 const output = await this.writer.generate(plan, feedback);
                 iterEvents.push("writer:generated");
-                // ★ 回调：Writer 产出
-                const outputStr = typeof output === "string" ? output : JSON.stringify(output);
+                // ★ 回调：Writer 产出 — 优先提取 content 字段（纯 Markdown），而非 JSON.stringify 整个对象
+                const outputStr = typeof output === "string"
+                    ? output
+                    : (output && typeof output === "object" && "content" in output)
+                        ? String(output.content)
+                        : JSON.stringify(output);
                 this.config.onWriterOutput?.(outputStr.slice(0, 500), iteration);
                 // --- Step 2: Critic 评估 ---
                 const evaluation = await this.critic.evaluate(output, this.criteria, originalTask);
@@ -157,23 +185,37 @@ export class PiAgentLoopEngine {
                 }
                 // --- Step 4: 战略决策 ---
                 const strategicDecision = this.makeStrategicDecision(evaluation, iterations, iteration);
-                // --- 更新最佳跟踪 ---
+                // --- 统一停止决策 ---
+                const stopDecision = this.stopPolicy.evaluate({
+                    iteration,
+                    evaluation,
+                    bestScore,
+                    lastScore,
+                    stagnationCount,
+                    guardResult,
+                    hasError: false,
+                });
+                // --- 更新最佳跟踪与停滞计数 ---
+                const improvement = isSignificantImprovement(evaluation.totalScore, bestScore, lastScore, this.stopPolicy.getConfig().improvementThreshold);
                 let isDegraded = false;
-                if (this.config.enableDegradationGuard && iteration > 1 && evaluation.totalScore < lastScore) {
-                    isDegraded = true;
-                    iterEvents.push("degradation");
-                }
-                if (evaluation.totalScore > bestScore) {
+                if (improvement === "new_best") {
                     bestScore = evaluation.totalScore;
                     bestOutput = output;
                     stagnationCount = 0;
                 }
+                else if (improvement === "improved") {
+                    // 显著改善但不创新高，停滞计数不增加
+                }
                 else {
                     stagnationCount++;
+                    // 退化保护：仅当下降超过阈值时标记
+                    if (this.config.enableDegradationGuard && iteration > 1 && lastScore - evaluation.totalScore > this.stopPolicy.getConfig().degradationThreshold) {
+                        isDegraded = true;
+                        iterEvents.push("degradation");
+                    }
                 }
-                // --- 确定终止原因 ---
-                const stopReason = this.determineStopReason(evaluation, iteration, stagnationCount, strategicDecision, guardResult);
                 // --- 记录迭代 ---
+                const stopReason = isDegraded ? "degradation" : stopDecision.reason;
                 iterations.push({
                     iteration,
                     output,
@@ -251,6 +293,235 @@ export class PiAgentLoopEngine {
         };
     }
     // ============================================================
+    // Phase C: 真正调用 pi-agent-core 的 agentLoop 驱动迭代
+    // ============================================================
+    /** agentLoop 驱动模式下的跨 turn 状态 */
+    agentLoopState;
+    /**
+     * 使用 pi-agent-core 的 runAgentLoop 驱动 Writer → Critic 循环。
+     *
+     * 设计：把 Writer 和 Critic 实现为 AgentTool，由 agentLoop 负责 turn 调度、
+     * 事件流和重试；我们在 shouldStopAfterTurn / prepareNextTurn 钩子中
+     * 注入 StopPolicy 决策和 Critic feedback。
+     */
+    async runWithAgentLoop(plan, originalTask) {
+        const startTime = Date.now();
+        this.agentLoopState = {
+            plan,
+            originalTask,
+            iteration: 0,
+            bestScore: -1,
+            bestOutput: null,
+            lastScore: -1,
+            stagnationCount: 0,
+            feedback: undefined,
+        };
+        this.agentLoopIterations = [];
+        const writeTool = this.buildWriteTool();
+        const evaluateTool = this.buildEvaluateTool();
+        const context = {
+            systemPrompt: this.buildSystemPrompt() +
+                "\n\n## 可用工具\n" +
+                "- `write`: 根据当前任务和反馈生成内容。\n" +
+                "- `evaluate`: 对最新生成的内容进行 Critic 评估（由系统触发，你不需要主动调用）。\n\n" +
+                "## 执行流程\n" +
+                "1. 首先调用 `write` 工具生成内容。\n" +
+                "2. 系统将自动评估并决定是否继续。\n" +
+                "3. 如果需要改进，系统会再次要求你调用 `write`。\n" +
+                "请始终使用 `write` 工具生成内容，不要把内容放在回复文本中。",
+            messages: [{ role: "user", content: originalTask, timestamp: Date.now() }],
+            tools: [writeTool, evaluateTool],
+        };
+        const config = {
+            model: this.config.model,
+            convertToLlm: (messages) => messages.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "toolResult"),
+            shouldStopAfterTurn: (ctx) => this.agentLoopShouldStop(ctx),
+            prepareNextTurn: (ctx) => this.agentLoopPrepareNextTurn(ctx),
+            toolExecution: "sequential",
+        };
+        const emit = (event) => {
+            for (const listener of this.eventListeners) {
+                listener(event);
+            }
+            // 从事件中捕获 writer 输出用于展示
+            if (event.type === "tool_execution_end" && event.toolName === "write" && !event.isError) {
+                const output = this.agentLoopState?.bestOutput;
+                if (output) {
+                    const content = typeof output === "string" ? output : output.content ?? "";
+                    this.config.onWriterOutput?.(String(content).slice(0, 500), this.agentLoopState?.iteration ?? 0);
+                }
+            }
+        };
+        try {
+            await runAgentLoop([], context, config, emit);
+        }
+        catch (e) {
+            console.error(`[PiAgentLoopEngine] agentLoop 失败:`, e instanceof Error ? e.message : e);
+            // 记录一次 error 迭代
+            this.agentLoopIterations.push({
+                iteration: this.agentLoopState?.iteration ?? 0,
+                output: {},
+                evaluation: this.emptyEvaluation(this.agentLoopState?.iteration ?? 0),
+                strategicDecision: "accept",
+                stopReason: "error",
+                durationMs: 0,
+                events: ["agentLoop_error"],
+            });
+        }
+        // 将 agentLoopState 中的迭代记录转换为 PiAgentIteration（由 tool 回调填充）
+        const finalIterations = this.agentLoopIterations;
+        const finalEval = finalIterations[finalIterations.length - 1]?.evaluation ?? this.emptyEvaluation(0);
+        const bestScore = this.agentLoopState?.bestScore ?? -1;
+        const bestOutput = this.agentLoopState?.bestOutput ?? null;
+        return {
+            iterations: finalIterations,
+            bestOutput: bestOutput ?? (finalIterations[0]?.output ?? null),
+            finalScore: bestScore > 0 ? bestScore : finalEval.totalScore,
+            passed: finalEval.passed || bestScore >= this.criteria.passThreshold,
+            excellent: finalEval.excellent || bestScore >= this.criteria.excellenceThreshold,
+            totalIterations: finalIterations.length,
+            totalDurationMs: Date.now() - startTime,
+            _piPowered: true,
+        };
+    }
+    agentLoopIterations = [];
+    buildWriteTool() {
+        return {
+            name: "write",
+            label: "生成内容",
+            description: "根据任务和反馈生成下一版内容",
+            parameters: Type.Object({}),
+            execute: async () => {
+                const state = this.agentLoopState;
+                state.iteration++;
+                state.lastEvaluation = undefined; // ★ 每轮生成后重置评估缓存
+                state.turnStartMs = Date.now();
+                this.config.onIterationStart?.(state.iteration);
+                const output = await this.writer.generate(state.plan, state.feedback);
+                const content = typeof output === "string" ? output : output.content ?? "";
+                state.bestOutput = output;
+                this.config.onWriterOutput?.(String(content).slice(0, 500), state.iteration);
+                return {
+                    content: [{ type: "text", text: String(content) }],
+                    details: output,
+                };
+            },
+        };
+    }
+    buildEvaluateTool() {
+        return {
+            name: "evaluate",
+            label: "评估内容",
+            description: "对最新生成的内容进行 Critic 评估",
+            parameters: Type.Object({}),
+            execute: async () => {
+                const state = this.agentLoopState;
+                const output = state.bestOutput;
+                const evaluation = await this.critic.evaluate(output, this.criteria, state.originalTask);
+                state.lastEvaluation = evaluation;
+                this.config.onCriticResult?.(evaluation.totalScore, evaluation.passed, evaluation.suggestions.map((s) => s.description), state.iteration);
+                return {
+                    content: [{ type: "text", text: `Score: ${evaluation.totalScore}/100, passed: ${evaluation.passed}` }],
+                    details: evaluation,
+                };
+            },
+        };
+    }
+    async agentLoopShouldStop(ctx) {
+        const state = this.agentLoopState;
+        // 只有 write tool 执行完才进行评估
+        const wrote = ctx.toolResults.some((r) => r.toolName === "write");
+        if (!wrote)
+            return false;
+        const output = state.bestOutput;
+        if (!output)
+            return false;
+        // 若还没有评估过，先执行一次 Critic 评估
+        let evaluation = state.lastEvaluation;
+        if (!evaluation) {
+            evaluation = await this.critic.evaluate(output, this.criteria, state.originalTask);
+            state.lastEvaluation = evaluation;
+            this.config.onCriticResult?.(evaluation.totalScore, evaluation.passed, evaluation.suggestions.map((s) => s.description), state.iteration);
+        }
+        // CompletionGuard 检查
+        let guardResult = null;
+        if (this.completionGuard) {
+            try {
+                this.completionGuard.setQualityScore(evaluation.totalScore);
+                guardResult = await this.completionGuard.check(output);
+                state.lastGuardResult = guardResult;
+                if (guardResult.progress) {
+                    this.config.onGoalProgress?.(guardResult.progress.verified, guardResult.progress.total, guardResult.stopCondition?.reason ?? "continue");
+                }
+            }
+            catch (e) {
+                console.warn(`[PiAgentLoopEngine] CompletionGuard 异常:`, e instanceof Error ? e.message : e);
+            }
+        }
+        // StopPolicy 决策
+        const stopDecision = this.stopPolicy.evaluate({
+            iteration: state.iteration,
+            evaluation,
+            bestScore: state.bestScore,
+            lastScore: state.lastScore,
+            stagnationCount: state.stagnationCount,
+            guardResult,
+            hasError: false,
+        });
+        // 更新最佳跟踪
+        const improvement = isSignificantImprovement(evaluation.totalScore, state.bestScore, state.lastScore, this.stopPolicy.getConfig().improvementThreshold);
+        let isDegraded = false;
+        if (improvement === "new_best") {
+            state.bestScore = evaluation.totalScore;
+            state.bestOutput = output;
+            state.stagnationCount = 0;
+        }
+        else if (improvement === "improved") {
+            // 不增加停滞
+        }
+        else {
+            state.stagnationCount++;
+            if (this.config.enableDegradationGuard && state.iteration > 1 && state.lastScore - evaluation.totalScore > this.stopPolicy.getConfig().degradationThreshold) {
+                isDegraded = true;
+            }
+        }
+        state.lastScore = evaluation.totalScore;
+        const stopReason = isDegraded ? "degradation" : stopDecision.reason;
+        this.agentLoopIterations.push({
+            iteration: state.iteration,
+            output,
+            evaluation,
+            strategicDecision: this.makeStrategicDecision(evaluation, this.agentLoopIterations, state.iteration),
+            stopReason,
+            durationMs: state.turnStartMs ? Date.now() - state.turnStartMs : 0,
+            events: [`agentLoop_turn_${state.iteration}`],
+        });
+        if (stopReason !== "continue") {
+            // 清理反馈，避免下一循环继续使用
+            state.feedback = undefined;
+            state.lastEvaluation = undefined;
+            state.lastGuardResult = null;
+        }
+        return stopReason !== "continue";
+    }
+    agentLoopPrepareNextTurn(ctx) {
+        const state = this.agentLoopState;
+        if (state.lastEvaluation) {
+            state.feedback = this.formatFeedback(state.lastEvaluation);
+            // 注入 feedback 作为用户消息，要求 LLM 继续调用 write tool
+            return {
+                context: {
+                    ...ctx.context,
+                    messages: [
+                        ...ctx.context.messages,
+                        { role: "user", content: `请根据以下反馈改进内容，然后再次调用 write 工具生成新版本。\n\n${state.feedback}`, timestamp: Date.now() },
+                    ],
+                },
+            };
+        }
+        return undefined;
+    }
+    // ============================================================
     // 事件订阅（供 CLI/TUI 层使用）
     // ============================================================
     /**
@@ -290,56 +561,18 @@ export class PiAgentLoopEngine {
         }
         return parts.join("\n");
     }
-    /** 统一停止条件判断（ADR-004 目标驱动） */
-    shouldStop(iterations, bestScore, lastScore, currentIteration) {
+    /** 统一停止条件判断（由 StopPolicy 决定） */
+    shouldStop(iterations, _bestScore, _lastScore, currentIteration) {
         if (currentIteration === 0)
             return false;
         const lastIter = iterations[iterations.length - 1];
         if (!lastIter)
             return false;
-        // P0: CompletionGuard 目标驱动
-        if (lastIter.stopReason === "goals_verified" || lastIter.stopReason === "goals_blocked") {
-            return true;
+        const stopped = lastIter.stopReason !== "continue";
+        if (stopped) {
+            console.log(`[PiAgentLoopEngine] shouldStop() → StopPolicy 触发停止: ${lastIter.stopReason}`);
         }
-        // P1: 质量达标
-        if (lastIter.evaluation.excellent)
-            return true;
-        if (lastIter.evaluation.passed)
-            return true;
-        // P2: 退化保护
-        if (this.config.enableDegradationGuard && iterations.length > 1) {
-            if (lastIter.evaluation.totalScore < lastScore)
-                return true;
-        }
-        // P3: 安全阀
-        if (currentIteration >= this.config.maxIterations)
-            return true;
-        return false;
-    }
-    /** 确定本轮停止原因 */
-    determineStopReason(evaluation, iteration, stagnationCount, decision, guardResult) {
-        // P0: CompletionGuard
-        if (guardResult?.stopCondition) {
-            if (guardResult.stopCondition.reason === "all_goals_verified")
-                return "goals_verified";
-            if (guardResult.stopCondition.reason === "any_goal_blocked")
-                return "goals_blocked";
-            if (guardResult.stopCondition.reason === "max_effort_exceeded")
-                return "max_iterations";
-        }
-        // P1: 质量
-        if (evaluation.excellent)
-            return "excellent";
-        if (evaluation.passed)
-            return "passed";
-        // P2: 安全阀
-        if (iteration >= this.config.maxIterations)
-            return "max_iterations";
-        // P3: 停滞
-        if (stagnationCount >= this.config.stagnationThreshold && decision === "pivot") {
-            return "stagnation_pivot";
-        }
-        return "passed"; // continue
+        return stopped;
     }
     /** 格式化评估反馈 */
     formatFeedback(evaluation) {

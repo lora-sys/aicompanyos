@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, readdir, stat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, stat, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Artifact, ArtifactManagerConfig, ArtifactType, HTMLStyleConfig } from "./types.js";
 
@@ -120,6 +120,18 @@ export class ArtifactManager {
    */
   getPath(name: string): string {
     return join(this.outputDir, name);
+  }
+
+  /**
+   * 清理所有产物
+   * 删除输出目录中的所有文件，下次写入时自动重建
+   */
+  async clearArtifacts(): Promise<void> {
+    try {
+      await rm(this.outputDir, { recursive: true, force: true });
+    } catch {
+      // 目录不存在时忽略
+    }
   }
 
   /**

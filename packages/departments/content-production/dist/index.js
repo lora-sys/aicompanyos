@@ -25,6 +25,7 @@
 import { getCriticDimensions } from "./prompts/critic-dimensions.js";
 import { getDepartmentGoalTemplates } from "./goals/index.js";
 import { createDefaultOutputPipeline } from "./output/pipeline.js";
+import { ContentTeamManager } from "./team/index.js";
 import { ARTICLE_WRITER_PROMPT } from "./prompts/writer-article.js";
 import { SEED_WRITER_PROMPT } from "./prompts/writer-seed.js";
 import { SHORT_VIDEO_WRITER_PROMPT } from "./prompts/writer-short-video.js";
@@ -243,6 +244,8 @@ export class ContentProductionDepartment {
             toolSet: ["web_search", "file_write"],
             // === Quality Gate ===
             qualityGate: QUALITY_GATES[contentType],
+            // === Team（动态团队）===
+            teamManager: new ContentTeamManager({ contentType }),
         };
     }
     /**

@@ -1,4 +1,4 @@
-import { EvolutionMode } from "./types";
+import { EvolutionMode } from "./types.js";
 export class EvolutionAgent {
     static AGENT_NAME = "evolution";
     static SYSTEM_PROMPT = `你是一个自我反思与模式学习引擎。你的任务是：
@@ -26,7 +26,7 @@ export class EvolutionAgent {
     // 执行进化（主入口）
     async run(params) {
         const startTime = Date.now();
-        const { evidenceChain, evolutionDocs, taskId, taskSuccess, taskMetrics } = params;
+        const { evidenceChain, evolutionDocs, taskId, taskSuccess, taskMetrics, criticSummary, guardSummary } = params;
         // 1. 记录指标并检测异常信号
         this.anomalyDetector.recordMetrics(taskId, taskMetrics);
         const signalsDetected = this.anomalyDetector.detect(taskId);
@@ -44,15 +44,15 @@ export class EvolutionAgent {
             taskSuccess,
         };
         const result = mode === EvolutionMode.DEEP
-            ? await this.deepEvolve(evolveParams)
-            : await this.regularEvolve(evolveParams);
+            ? await this.deepEvolve(evolveParams, criticSummary, guardSummary)
+            : await this.regularEvolve(evolveParams, criticSummary, guardSummary);
         result.durationMs = Date.now() - startTime;
         result.signalsDetected = signalsDetected;
         result.mode = mode;
         return result;
     }
     // 常规进化流程
-    async regularEvolve(params) {
+    async regularEvolve(params, criticSummary, guardSummary) {
         const { evidenceChain, evolutionDocs, taskId, taskSuccess } = params;
         // 提取模式
         const patterns = await this.patternExtractor.extractPatterns(evidenceChain);
@@ -72,7 +72,7 @@ export class EvolutionAgent {
         };
         const designDiffs = currentDesign ? this.diffGenerator.generateDesignDiff(currentDesign, safePatterns.uxDecisions) : [];
         const userDiffs = currentUser ? this.diffGenerator.generateUserDiff(currentUser, safePatterns.preferences) : [];
-        const selfDiff = this.diffGenerator.generateSelfDiff(currentSelf ?? { experiences: [], totalTasksCompleted: 0, totalSuccessRate: 0, capabilities: [], limitations: [], lastUpdated: "", knownCapabilities: [], knownLimitations: [] }, safePatterns, taskSuccess, this.inferTaskType(evidenceChain));
+        const selfDiff = this.diffGenerator.generateSelfDiff(currentSelf ?? { experiences: [], totalTasksCompleted: 0, totalSuccessRate: 0, capabilities: [], limitations: [], lastUpdated: "", knownCapabilities: [], knownLimitations: [] }, safePatterns, taskSuccess, this.inferTaskType(evidenceChain), criticSummary, guardSummary);
         // 合并低风险变更
         const mergeResult = await this.autoMerger.mergeAll({ designDiffs, userDiffs, selfDiff });
         return {
@@ -90,13 +90,13 @@ export class EvolutionAgent {
         };
     }
     // 深度进化流程（更全面的分析）
-    async deepEvolve(params) {
+    async deepEvolve(params, criticSummary, guardSummary) {
         // 深度进化与常规进化的区别：
         // - 进行更全面的 LLM 分析
         // - 降低合并阈值以允许更多变更
         // - 生成更详细的经验记录
         // 先执行常规流程作为基础
-        const baseResult = await this.regularEvolve(params);
+        const baseResult = await this.regularEvolve(params, criticSummary, guardSummary);
         // 深度分析：使用 LLM 对整个证据链进行综合反思
         const deepLesson = await this.deepReflect(params.evidenceChain, params.taskSuccess);
         if (deepLesson) {
@@ -105,10 +105,20 @@ export class EvolutionAgent {
         return baseResult;
     }
     // 决定进化模式
-    decideMode(_metrics, signals) {
-        // 有任何信号触发则进入深度进化
-        const hasTriggeredSignal = signals.some((s) => s.triggered);
-        return hasTriggeredSignal ? EvolutionMode.DEEP : EvolutionMode.REGULAR;
+    decideMode(metrics, signals) {
+        // 信号触发 → DEEP
+        if (signals.some((s) => s.triggered))
+            return EvolutionMode.DEEP;
+        // Metrics 异常也触发深度进化
+        if (metrics.replanCount >= 2)
+            return EvolutionMode.DEEP;
+        if (metrics.executionDuration > 180_000)
+            return EvolutionMode.DEEP; // 3分钟
+        if (!metrics.consensusPassed)
+            return EvolutionMode.DEEP;
+        if ((metrics.userModifications ?? 0) > 0)
+            return EvolutionMode.DEEP;
+        return EvolutionMode.REGULAR;
     }
     // 推断任务类型
     inferTaskType(evidenceChain) {

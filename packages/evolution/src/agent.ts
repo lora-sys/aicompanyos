@@ -1,6 +1,6 @@
 // Evolution Agent - 自进化引擎主入口
 import type { LLMProvider } from "@aicos/loop-engine/types";
-import type { IEvidenceReader, IEvolutionDocWriter } from "./types";
+import type { IEvidenceReader, IEvolutionDocWriter } from "./types.js";
 import type {
   EvolutionResult,
   EvolutionSignal,
@@ -11,8 +11,8 @@ import type {
   IDiffGenerator,
   IAutoMerger,
   IAnomalyDetector,
-} from "./types";
-import { EvolutionMode } from "./types";
+} from "./types.js";
+import { EvolutionMode } from "./types.js";
 
 export class EvolutionAgent {
   static readonly AGENT_NAME = "evolution";
@@ -50,9 +50,11 @@ export class EvolutionAgent {
     taskInput: string;
     taskSuccess: boolean;
     taskMetrics: TaskMetrics;
+    criticSummary?: import("./types.js").CriticSummary;
+    guardSummary?: { totalGoals: number; verifiedGoals: number; stopReason?: string };
   }): Promise<EvolutionResult> {
     const startTime = Date.now();
-    const { evidenceChain, evolutionDocs, taskId, taskSuccess, taskMetrics } = params;
+    const { evidenceChain, evolutionDocs, taskId, taskSuccess, taskMetrics, criticSummary, guardSummary } = params;
 
     // 1. 记录指标并检测异常信号
     this.anomalyDetector.recordMetrics(taskId, taskMetrics);
@@ -76,8 +78,8 @@ export class EvolutionAgent {
 
     const result =
       mode === EvolutionMode.DEEP
-        ? await this.deepEvolve(evolveParams)
-        : await this.regularEvolve(evolveParams);
+        ? await this.deepEvolve(evolveParams, criticSummary, guardSummary)
+        : await this.regularEvolve(evolveParams, criticSummary, guardSummary);
 
     result.durationMs = Date.now() - startTime;
     result.signalsDetected = signalsDetected;
@@ -87,7 +89,11 @@ export class EvolutionAgent {
   }
 
   // 常规进化流程
-  private async regularEvolve(params: EvolutionParams): Promise<EvolutionResult> {
+  private async regularEvolve(
+    params: EvolutionParams,
+    criticSummary?: import("./types.js").CriticSummary,
+    guardSummary?: { totalGoals: number; verifiedGoals: number; stopReason?: string },
+  ): Promise<EvolutionResult> {
     const { evidenceChain, evolutionDocs, taskId, taskSuccess } = params;
 
     // 提取模式
@@ -115,6 +121,8 @@ export class EvolutionAgent {
       safePatterns,
       taskSuccess,
       this.inferTaskType(evidenceChain),
+      criticSummary,
+      guardSummary,
     );
 
     // 合并低风险变更
@@ -136,14 +144,18 @@ export class EvolutionAgent {
   }
 
   // 深度进化流程（更全面的分析）
-  private async deepEvolve(params: EvolutionParams): Promise<EvolutionResult> {
+  private async deepEvolve(
+    params: EvolutionParams,
+    criticSummary?: import("./types.js").CriticSummary,
+    guardSummary?: { totalGoals: number; verifiedGoals: number; stopReason?: string },
+  ): Promise<EvolutionResult> {
     // 深度进化与常规进化的区别：
     // - 进行更全面的 LLM 分析
     // - 降低合并阈值以允许更多变更
     // - 生成更详细的经验记录
 
     // 先执行常规流程作为基础
-    const baseResult = await this.regularEvolve(params);
+    const baseResult = await this.regularEvolve(params, criticSummary, guardSummary);
 
     // 深度分析：使用 LLM 对整个证据链进行综合反思
     const deepLesson = await this.deepReflect(params.evidenceChain, params.taskSuccess);
@@ -157,12 +169,17 @@ export class EvolutionAgent {
 
   // 决定进化模式
   private decideMode(
-    _metrics: TaskMetrics,
+    metrics: TaskMetrics,
     signals: EvolutionSignal[],
   ): EvolutionMode {
-    // 有任何信号触发则进入深度进化
-    const hasTriggeredSignal = signals.some((s) => s.triggered);
-    return hasTriggeredSignal ? EvolutionMode.DEEP : EvolutionMode.REGULAR;
+    // 信号触发 → DEEP
+    if (signals.some((s) => s.triggered)) return EvolutionMode.DEEP;
+    // Metrics 异常也触发深度进化
+    if (metrics.replanCount >= 2) return EvolutionMode.DEEP;
+    if (metrics.executionDuration > 180_000) return EvolutionMode.DEEP; // 3分钟
+    if (!metrics.consensusPassed) return EvolutionMode.DEEP;
+    if ((metrics.userModifications ?? 0) > 0) return EvolutionMode.DEEP;
+    return EvolutionMode.REGULAR;
   }
 
   // 推断任务类型
