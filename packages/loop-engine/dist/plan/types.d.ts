@@ -1,8 +1,8 @@
-import type { ExecutionPlan } from "../types.js";
+import type { ExecutionPlan, WorkerRole } from "../types.js";
 export interface PlanGenerationInput {
     taskInput: string;
     interrogationResults: Record<string, string>;
-    availableAgents: string[];
+    availableAgents: (WorkerRole | string)[];
     availableTools: string[];
 }
 export interface PlanGenerationResult {

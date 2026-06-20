@@ -26,6 +26,10 @@ export interface WriterInput {
   rewriteRound?: number; // 当前是第几轮重写 (1 = 首次, 2+ = 重写)
   // === 自定义 System Prompt（支持不同内容格式切换）===
   customSystemPrompt?: string; // 来自 DepartmentConfig 的自定义 Writer System Prompt（优先级最高）
+  // === P0 主题防漂移：原始任务锚定 ===
+  // 由 LoopHarness/LegacyDriver 从 [ORIGINAL_USER_TASK] 标记中提取，
+  // extractOriginalTopic() 以最高优先级使用此字段，避免依赖 interrogrationResults 或 regex fallback
+  originalTask?: string; // 用户的原始输入任务（未经任何加工）
 }
 
 // Writer 输出

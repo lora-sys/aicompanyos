@@ -23,7 +23,7 @@ Step 3: 核心引擎层
    └─ packages/loop-engine/MODULE_GUIDE.md ← ★ Loop 引擎核心（最复杂）
 
 Step 4: Agent 实现层
-   └─ packages/subagents/MODULE_GUIDE.md  ← Writer/Critic/Researcher/UI-UX
+   └─ packages/subagents/MODULE_GUIDE.md  ← Writer/Critic/Researcher/UI-UX/Reviewer
 
 Step 5: 编排与进化层
    ├─ packages/evolution/MODULE_GUIDE.md  ← 自进化引擎
@@ -43,10 +43,10 @@ Step 6: 部门层（ADR-005 部门制架构）
 | 2 | [mcp](packages/mcp/MODULE_GUIDE.md) | `@aicos/mcp` | MCP 协议客户端 + Exa 搜索 | 基础设施 | `MCPClientAdapter`, `EXA_MCP_CONFIG` |
 | 3 | [memory](packages/memory/MODULE_GUIDE.md) | `@aicos/memory` | self.jsonl / user.jsonl / design.mdx 持久化 | 基础设施 | `MemoryManager`, `EvolutionDocsManager` |
 | 4 | [evidence-chain](packages/evidence-chain/MODULE_GUIDE.md) | `@aicos/evidence-chain` | 执行证据链记录与回放 | 基础设施 | `EvidenceChain`, `5 种 TraceRecorder` |
-| 5 | **[loop-engine](packages/loop-engine/MODULE_GUIDE.md)** | **`@aicos/loop-engine`** | **双层嵌套循环引擎（Canonical 核心）** | **核心** | **`LoopModule`, `LoopHarness`, `GradingCriteria`, `LoopStateMachine`, `TeamManager`, `TaskAnalyzer`, `HistoryReader`, `WorkerRegistry`** |
-| 6 | [subagents](packages/subagents/MODULE_GUIDE.md) | `@aicos/subagents` | Writer / Critic / Researcher / UI-UX Pro Max | Agent | `WriterAgent`, `CriticAgent`, `UIUXProMaxSkill` |
+| 5 | **[loop-engine](packages/loop-engine/MODULE_GUIDE.md)** | **`@aicos/loop-engine`** | **双层嵌套循环引擎（Canonical 核心）** | **核心** | **`LoopModule`, `LoopHarness`, `IInnerLoopEngine`, `LegacyInnerLoopDriver`, `PiAgentInnerLoopDriver`, `InnerLoopResult`, `GradingCriteria`, `LoopStateMachine`, `TeamManager`, `TaskAnalyzer`, `HistoryReader`, `WorkerRegistry`, `WorkerRole`, `GenericAgent`, `StopPolicy`** |
+| 6 | [subagents](packages/subagents/MODULE_GUIDE.md) | `@aicos/subagents` | Writer / Critic / Researcher / UI-UX Pro Max / Reviewer | Agent | `WriterAgent`, `CriticAgent`, `ResearcherAgent`, `UIUXProMaxSkill`, `ReviewerAgent` |
 | 7 | [evolution](packages/evolution/MODULE_GUIDE.md) | `@aicos/evolution` | 自进化引擎（模式提取 / 异常检测 / Diff / 合并） | 进化 | `EvolutionAgent`, `PatternExtractor`, `AnomalyDetector` |
-| 8 | [cli](packages/cli/MODULE_GUIDE.md) | `@aicos/cli` | 交互式 TUI 入口 + 6 个 UI 组件 | 入口 | `CLIApplication`, `InterrogateModal` |
+| 8 | [cli](packages/cli/MODULE_GUIDE.md) | `@aicos/cli` | 交互式 TUI 入口 + 6 个 UI 组件 | 入口 | `CLIApplication`, `InterrogateModal`, `DepartmentSetup`, `TUIManager`, `ProviderFactory`, `HarnessFactory` |
 | 9 | [content-production](packages/departments/content-production/) | `@aicos/content-production` | 内容产出部（自媒体内容生产部门）| 部门 | `ContentProductionDepartment`, `ContentTeamManager`, `CONTENT_TEAM_RULES` |
 
 ---
@@ -65,14 +65,17 @@ Step 6: 部门层（ADR-005 部门制架构）
 │     ├─ TaskAnalyzer: 7 维特征提取（规则引擎）                       │
 │     ├─ TeamComposer: 8 条优先级规则匹配                            │
 │     ├─ TeamManager: 编排器（组合+工厂生成）                         │
-│     ├─ WorkerRegistry: 全局 Worker 注册表                          │
-│     └─ HistoryReader: Memory 回流→Prompt 注入                      │
+│     ├─ WorkerRegistry: 全局 Worker 注册表（真实 factory）           │
+│     ├─ HistoryReader: Memory 回流→Prompt 注入                      │
+│     └─ 已接入执行层: CLI 切换部门时自动组队并注册 WorkerFactory    │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │ team orchestration
                            ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        packages/cli (入口层)                         │
-│   CLIApplication → executeLoop() → 6 阶段状态机 → TUI 渲染           │
+│   AICOSApp → DepartmentSetup + TUIManager + ProviderFactory        │
+│          + HarnessFactory + 3 Coordinators                          │
+│   executeLoop() → 6 阶段状态机 → TUI 渲染                           │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │
        ┌───────────────────┼───────────────────┐
@@ -80,10 +83,11 @@ Step 6: 部门层（ADR-005 部门制架构）
 ┌──────────────┐  ┌────────────────┐  ┌──────────────────┐
 │ subagents    │  │ loop-engine    │  │ evolution         │
 │              │  │ (Canonical 核心)│  │                   │
-│ WriterAgent  │→ │ LoopModule     │  │ EvolutionAgent    │
-│ CriticAgent  │  │ LoopHarness    │  │ PatternExtractor  │
-│ Researcher   │  │ StateMachine   │  │ AnomalyDetector   │
-│ UIUXProMax   │  │ GradingCriteria│  │ DiffGenerator     │
+│ WriterAgent  │→ │ LoopHarness    │  │ EvolutionAgent    │
+│ CriticAgent  │  │  └IInnerLoopEngine↘│ PatternExtractor  │
+│ Researcher   │  │   LegacyDriver  │  │ AnomalyDetector   │
+│ UIUXProMax   │  │   PiAgentDriver│  │ DiffGenerator     │
+│ ReviewerAgent│  │ LoopModule     │  │                   │
 └──────┬───────┘  ├───┬──────┬─────┘  └────────┬─────────┘
        │          │   │      │               │
        │    ┌─────┘   │      └──────┬────────┘
@@ -146,7 +150,8 @@ Step 6: 部门层（ADR-005 部门制架构）
 │    ]                                           │
 │     → CompletionGuard 使用部门 GoalTemplate    │
 │    ]                                           │
-│    └─ LoopModule.run(step) [Inner Loop — 目标驱动]      │
+│    └─ IInnerLoopEngine.run(step) [Inner Loop — 目标驱动]  │
+│       │  (LegacyInnerLoopDriver 或 PiAgentInnerLoopDriver) │
 │       ├─ Iteration 1: WriterAgent.generate()     │
 │       │   └─ writingWorkflow:                  │
 │       │      UIUXSkill → research → LLM → write│
@@ -215,6 +220,8 @@ Step 6: 部门层（ADR-005 部门制架构）
 | **ConsensusLock** | 多视角审核（Writer 自评 + Critic 他评） |
 | **退化保护** | 新版本分数低于历史最佳则回滚 |
 | **Seam 模式** | 接口(I前缀) 与实现分离的设计模式 |
+| **IInnerLoopEngine** | Inner Loop 统一接口，LoopHarness 通过此接口与具体 driver 解耦 |
+| **WorkerRole** | 已知 Worker 角色类型联合（writer/critic/researcher/uiux-designer/reviewer） |
 
 ---
 
@@ -287,6 +294,9 @@ this.newAgent = new NewAgent(this.toolRegistry, this.llmProvider);
 | **修改 Artifact Pipeline**（新增输出格式等） | `packages/cli/MODULE_GUIDE.md` + `packages/loop-engine/MODULE_GUIDE.md` | 更新管线说明和数据流图 |
 | **修改 Memory 持久化格式**（JSON/JSONL 字段变更） | `packages/memory/MODULE_GUIDE.md` + `UBIQUITOUS_LANGUAGE.md` | 更新存储布局和数据模型 |
 | **新增/修改 TUI 组件** | `packages/cli/MODULE_GUIDE.md` | 更新组件清单和职责表 |
+| **记录/发现领域信号**（反馈、观察、想法） | `signals/` | 新建 signal 文件，更新对应 domain README 的 evidence 引用 |
+| **新增/修改领域循环** | `domains/<x>/README.md` + `LOG.md` | 更新 domain README 的目标/焦点/时间线，触发时追加 LOG.md |
+| **更新架构知识**（决策/分析/学习） | `docs/` | 新建 doc 文件，使用 frontmatter `kind: doc` |
 
 ### 更新操作 Checklist
 
@@ -297,6 +307,9 @@ this.newAgent = new NewAgent(this.toolRegistry, this.llmProvider);
 - [ ] 是否**新增/移除/重命名**了模块？→ 更新 `AGENTS.md` 索引
 - [ ] **依赖关系**是否变化？→ 更新 `AGENTS.md` 架构图
 - [ ] 在 Git commit message 中标注更新的文档文件（如 `docs: update loop-engine MODULE_GUIDE.md for new retry config`）
+- [ ] 是否新增了**领域信号/证据**？→ 写入 `signals/`，更新对应 domain 引用
+- [ ] 是否修改了**架构决策/知识**？→ 写入 `docs/` 或更新 `ARCHITECTURE.md`
+- [ ] 是否完成了一轮**领域循环执行**？→ 追加 `## Timeline` 到 domain README + 更新 `LOG.md`
 
 ---
 
@@ -332,7 +345,11 @@ this.newAgent = new NewAgent(this.toolRegistry, this.llmProvider);
 | [content-production/team/](packages/departments/content-production/src/team/) | 内容产出部专属团队规则（5个文件+21个测试） | content-production 维护者 |
 | [docs/adr-005-department-architecture.md](docs/adr-005-department-architecture.md) | 部门制架构（ADR-005） | 架构组 |
 | [docs/adr-004-goal-driven-completion-guard.md](docs/adr-004-goal-driven-completion-guard.md) | 目标驱动停止条件体系（ADR-004） | loop-engine 维护者 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 知识库架构模型（两种 artifact 种类 + 领域循环） | 全体 |
+| [LOG.md](LOG.md) | 全局工作日志（append-only，每次完成提交前追加） | 全体 |
+| [signals/](signals/README.md) | 证据信号：反馈、想法、观察（去重+频率计数） | 全体 |
+| [domains/](domains/README.md) | 领域循环（工作流 loop 的 README + 指标） | 各 domain 维护者 |
 
 ---
 
-*最后更新：2026-06-19 | 基于 v0.3.0 全量源码扫描（含 ADR-004/005 + Dynamic Team Layer）*
+*最后更新：2026-06-20 | 基于 v0.5.0 全量源码扫描（含 ADR-004/005 + Dynamic Team Layer + IInnerLoopEngine 统一接口 + CLI 拆分 + 知识库 harness）*

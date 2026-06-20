@@ -44,9 +44,9 @@ export interface IWorker {
     role: WorkerRole;
     /**
      * 对应 LoopHarness.registerAgent() 的 agentType 字符串
-     * 如 "writer", "critic", "researcher" 等
+     * 如 "writer", "critic", "researcher" 等（已知角色编译期可检查）
      */
-    agentType: string;
+    agentType: WorkerRole | string;
     /** 此 Worker 在该任务中的专属配置覆盖 */
     configOverride?: WorkerConfig;
     /** 是否为必需角色（缺失时报错 vs 跳过） */
@@ -146,6 +146,16 @@ export interface TeamCompositionRule {
  */
 export type AgentFactory = (ctx: import("../orchestrator/types.js").OrchestratorAgentContext) => import("../loop-module/index.js").IGeneratorAgent<any, any> | import("../loop-module/index.js").IEvaluatorAgent | import("../orchestrator/types.js").AgentExecutor;
 /**
+ * Worker 工厂依赖（由 CLI 层注入）
+ *
+ * 用于 WorkerRegistration.defaultFactory 中接收依赖的工厂函数签名。
+ * 当 defaultFactory 是函数时，它接收 WorkerFactoryDeps 并返回 AgentExecutor。
+ */
+export interface WorkerFactoryDeps {
+    llmProvider: import("../interrogate/types.js").LLMProvider;
+    toolRegistry: import("../tool-registry/registry.js").ToolRegistry;
+}
+/**
  * 团队上下文 — composeTeam() 的环境参数
  */
 export interface TeamContext {
@@ -194,6 +204,17 @@ export interface ITeamManager {
      * @returns agentType → Factory 函数的映射
      */
     createWorkerFactories(team: ITeam): Map<string, AgentFactory>;
+    /**
+     * 返回团队中各 Worker 的 AgentFactory 映射（由 CLI 层调用）
+     *
+     * 遍历当前团队的 workers，从 WorkerRegistry 获取 defaultFactory，
+     * 如果 factory 存在且不是 null，包装为 (ctx) => agent 格式返回。
+     * writer/critic 的 factory 由 LoopHarness.registerAgent 管理，不在此处返回。
+     *
+     * @param deps Worker 工厂依赖（LLM Provider + ToolRegistry）
+     * @returns agentType → AgentFactory 的映射
+     */
+    createWorkerFactoriesWithDeps?(deps: WorkerFactoryDeps): Record<string, AgentFactory>;
 }
 /**
  * Worker 注册项
@@ -201,9 +222,16 @@ export interface ITeamManager {
 export interface WorkerRegistration {
     id: string;
     role: WorkerRole;
-    agentType: string;
-    /** 默认工厂函数（无 configOverride 时使用） */
-    defaultFactory: AgentFactory;
+    agentType: WorkerRole | string;
+    /**
+     * 默认工厂函数
+     *
+     * 支持两种形式：
+     * 1. AgentFactory — 直接的工厂函数（writer/critic 由 LoopHarness 管理）
+     * 2. (deps: WorkerFactoryDeps) => AgentExecutor — 接收依赖的工厂函数（researcher/ui-ux/reviewer 等）
+     * 3. null — 无工厂（由 LoopHarness.registerAgent 管理）
+     */
+    defaultFactory: AgentFactory | ((deps: WorkerFactoryDeps) => import("../orchestrator/types.js").AgentExecutor) | null;
     /** 此 Worker 支持的 contentType 列表（空 = 全部支持） */
     supportedContentTypes?: Array<string>;
     /** 描述 */
@@ -223,7 +251,7 @@ export interface IWorkerRegistry {
     /** 获取所有已注册的 Worker */
     getAllWorkers(): WorkerRegistration[];
     /** 根据 agentType 查找 Worker */
-    getByAgentType(agentType: string): WorkerRegistration | undefined;
+    getByAgentType(agentType: WorkerRole | string): WorkerRegistration | undefined;
     /** 检查某角色是否有可用 Worker */
     hasRole(role: WorkerRole): boolean;
 }

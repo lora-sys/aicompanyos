@@ -21,6 +21,7 @@ export { InterrogateEngine, } from "./interrogate/engine.js";
 export { PlanEngine, } from "./plan/engine.js";
 // 编排器导出
 export { ExecutionOrchestrator, } from "./orchestrator/engine.js";
+export { GenericAgent, } from "./orchestrator/generic-agent.js";
 // 共识锁导出
 export { ConsensusLock, } from "./consensus/engine.js";
 export { ConsensusVote, } from "./consensus/types.js";
@@ -39,6 +40,8 @@ export { TransientError, PermanentError, ErrorClassifier, defaultClassifier, } f
 export { retryWithBackoff, CircuitBreaker, } from "./utils/retry.js";
 // Loop Engineering Harness 导出（双层嵌套循环）
 export { LoopHarness, } from "./loop-harness/index.js";
+export { LegacyInnerLoopDriver, } from "./loop-harness/legacy-driver.js";
+export { PiAgentInnerLoopDriver, } from "./loop-harness/pi-agent-driver.js";
 // 统一阈值配置导出
 export { THRESHOLDS, THRESHOLD_PROFILES, getThresholdsForProfile } from "./config/thresholds.js";
 // Loop Module 导出（可复用: Planner→Generator→Evaluator+Evolution）
@@ -52,6 +55,6 @@ export { PiAgentLoopEngine, } from "./pi-agent-adapter.js";
 // ★ StopPolicy — 统一停止策略模块
 export { StopPolicy, evaluateStop, isSignificantImprovement, DEFAULT_STOP_POLICY_CONFIG, } from "./stop-policy/policy.js";
 // ★ Dynamic Team Architecture — 动态团队抽象层
-export { TaskAnalyzer, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, HistoryReader, DEFAULT_HISTORY_READER_CONFIG, } from "./team/index.js";
+export { TaskAnalyzer, findSimilarCases, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, HistoryReader, DEFAULT_HISTORY_READER_CONFIG, } from "./team/index.js";
 export { WORKER_ROLES, LENGTH_THRESHOLDS } from "./team/index.js";
 //# sourceMappingURL=index.js.map

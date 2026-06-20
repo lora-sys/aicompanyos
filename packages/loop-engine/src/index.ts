@@ -12,6 +12,7 @@ export {
   type ExecutionPlan,
   type PlanStep,
   type TaskProfile,
+  type WorkerRole,
 } from "./types.js";
 
 // 核心类导出
@@ -62,6 +63,10 @@ export {
 export {
   ExecutionOrchestrator,
 } from "./orchestrator/engine.js";
+export {
+  GenericAgent,
+  type GenericAgentConfig,
+} from "./orchestrator/generic-agent.js";
 export {
   type StepExecutionResult,
   type OrchestratorConfig,
@@ -158,6 +163,20 @@ export type {
   StepLoopResult,
   HarnessExecutionResult,
 } from "./loop-harness/index.js";
+// ★ v0.5.0: 统一 Inner Loop 引擎接口
+export type {
+  IInnerLoopEngine,
+  InnerLoopConfig,
+  InnerLoopResult,
+  InnerLoopIteration,
+  InnerLoopStopReason,
+} from "./loop-harness/inner-loop-types.js";
+export {
+  LegacyInnerLoopDriver,
+} from "./loop-harness/legacy-driver.js";
+export {
+  PiAgentInnerLoopDriver,
+} from "./loop-harness/pi-agent-driver.js";
 
 // 统一阈值配置导出
 export { THRESHOLDS, THRESHOLD_PROFILES, getThresholdsForProfile } from "./config/thresholds.js";
@@ -291,6 +310,7 @@ export type {
 // ★ Dynamic Team Architecture — 动态团队抽象层
 export {
   TaskAnalyzer,
+  findSimilarCases,
   TeamComposer,
   TeamManager,
   WorkerRegistry,
@@ -299,7 +319,6 @@ export {
   DEFAULT_HISTORY_READER_CONFIG,
 } from "./team/index.js";
 export type {
-  WorkerRole,
   IWorker,
   WorkerConfig,
   TaskFeatures,
@@ -310,6 +329,7 @@ export type {
   ITeamManager,
   TeamContext,
   AgentFactory,
+  WorkerFactoryDeps,
   IWorkerRegistry,
   WorkerRegistration,
 } from "./team/index.js";

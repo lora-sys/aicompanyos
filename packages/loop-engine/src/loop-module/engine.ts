@@ -26,6 +26,49 @@ import type {
 import { CompletionGuard } from "../completion-guard/guard.js";
 import { StopPolicy, evaluateStop, isSignificantImprovement, type StopContext } from "../stop-policy/policy.js";
 
+/**
+ * ★ P0 防漂移：从增强后的 input 中提取纯净的原始任务
+ *
+ * LoopHarness 会在 taskInput 中注入 [ORIGINAL_USER_TASK] 标记，
+ * 但此标记不应该传递给 Evaluator 作为 originalTask ——
+ * 否则 Critic 的 topic accuracy 检测会看到带有标记文本的污染输入。
+ *
+ * 此函数提取 [ORIGINAL_USER_TASK] 标记后的原始内容，
+ * 或回退到清洗后的 input 文本（去除标记）。
+ */
+function extractOriginalTask(input: unknown): string {
+  // ★ 处理 PlanStep 对象：直接使用 description 字段，避免 JSON.stringify 转义换行符
+  if (typeof input === "object" && input !== null) {
+    const obj = input as Record<string, unknown>;
+    if (typeof obj.description === "string") {
+      const match = obj.description.match(/\[ORIGINAL_USER_TASK\][^\n]*[：:]\s*([^\n]+)/);
+      if (match && match[1].trim().length > 2) {
+        return match[1].trim();
+      }
+      // 回退：description 本身
+      return obj.description
+        .replace(/\[ORIGINAL_USER_TASK\][^\n]*/g, "")
+        .replace(/\[STEP_DESCRIPTION\][^\n]*/g, "")
+        .replace(/\n{2,}/g, "\n")
+        .trim() || obj.description.trim();
+    }
+  }
+
+  const raw = typeof input === "string" ? input : JSON.stringify(input);
+  // 尝试从 [ORIGINAL_USER_TASK] 标记中提取纯净原始任务
+  const match = raw.match(/\[ORIGINAL_USER_TASK\][^\n]*[：:]\s*([^\n]+)/);
+  if (match && match[1].trim().length > 2) {
+    return match[1].trim();
+  }
+  // 回退：去除标记文本，只保留非标记部分
+  return raw
+    .replace(/\[ORIGINAL_USER_TASK\][^\n]*/g, "")
+    .replace(/\[STEP_DESCRIPTION\][^\n]*/g, "")
+    .replace(/\n{2,}/g, "\n")
+    .trim()
+    || raw;
+}
+
 // ============================================================
 // Agent 接口定义（Seam — 可替换的实现）
 // ============================================================
@@ -307,7 +350,11 @@ export class LoopModule<
           () => this.evaluator.evaluate(
             output,
             this.criteria,
-            typeof input === "string" ? input : JSON.stringify(input)
+            // ★ P0 防漂移：传递纯净的原始任务给评估器，而非增强后的 input
+            // 之前使用 typeof input === "string" ? input : JSON.stringify(input)
+            // 会导致 [ORIGINAL_USER_TASK] / [STEP_DESCRIPTION] 标记文本被传给 Critic，
+            // 稀释 topic accuracy 检测的准确性。
+            extractOriginalTask(input)
           ),
           {
             maxAttempts: 2,

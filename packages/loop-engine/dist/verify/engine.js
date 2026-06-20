@@ -21,14 +21,31 @@ const qualityResultSchema = z.union([
 // 解析器实例：验证失败返回安全默认值（中间分）
 const qualityParser = createLLMParser({
     schema: qualityResultSchema,
-    fallback: { score: 50, reasons: ["质量验证解析失败，给予默认分"] },
+    fallback: { score: 65, reasons: ["质量验证解析失败，给予默认分"] },
     strategy: FallbackStrategy.RETURN_FALLBACK,
     logPrefix: "VerifyEngine.verifyQuality",
 });
-// System Prompt：验证审核
+// System Prompt：验证审核（校准版 — 减少偏保守评分）
 const VERIFY_QUALITY_PROMPT = `你是一位质量验证专家。请对以下产物进行质量审核。
 
-根据原始任务需求和上下文信息，评估产物的完整性和质量。
+## 评分标准（校准基线）
+
+请根据以下评分区间进行客观评估，避免过于保守或过于宽松：
+
+- **90-100分（优秀）**: 内容完整、结构清晰、有深度洞察、符合目标平台风格
+- **80-89分（良好）**: 内容合格、有可读性、基本满足任务要求，存在少量可优化之处
+- **70-79分（合格）**: 内容基本完整，但存在明显的结构或深度不足
+- **60-69分（待改进）**: 有较多问题但仍有可用价值
+- **0-59分（不合格）**: 严重偏离任务要求或内容质量极低
+
+## 评分原则
+
+1. **任务匹配度优先**: 只要产物满足了原始任务的核心需求，基础分应在 70 以上
+2. **平台适配考量**: 社交媒体内容（小红书/推特等）以平台风格适配为主要标准，不套用学术论文标准
+3. **避免“幻觉式扣分”**: 不要因为“可能还可以更好”而扣分，只扣明确存在的问题
+4. **内容完整性 > 绝对深度**: 一篇结构完整的中等深度文章优于结构残缺的深度文章
+
+## 输出格式
 
 返回 JSON 格式（单个对象，不要返回数组）：
 {
@@ -130,10 +147,13 @@ ${input.originalTask}
 ## 拷问上下文
 ${contextText || "（无）"}
 
+## 执行计划摘要
+${input.plan?.steps?.length ? `共 ${input.plan.steps.length} 个步骤: ${input.plan.steps.map((s) => s.title || s.description || "未命名").join(", ")}` : "（无计划信息）"}
+
 ## 产物文件内容
 ${contents.join("\n\n")}
 
-请评估以上产物的质量和完整性。`;
+请评估以上产物的质量和完整性。注意：只要产物基本满足了原始任务的核心需求，评分应在 70 分以上。`;
         try {
             const response = await this.llmProvider.chat([
                 { role: "system", content: VERIFY_QUALITY_PROMPT },
@@ -144,7 +164,7 @@ ${contents.join("\n\n")}
             if (!result.success) {
                 // Schema 验证失败 → 尝试手动提取 score
                 const scoreMatch = response.match(/"score"\s*:\s*(\d+)/);
-                const score = scoreMatch ? Math.min(100, Math.max(0, parseInt(scoreMatch[1], 10))) : 50;
+                const score = scoreMatch ? Math.min(100, Math.max(0, parseInt(scoreMatch[1], 10))) : 65;
                 return { score, reasons: [`质量验证 (兜底解析): score=${score}`] };
             }
             // 兼容 LLM 返回数组格式：取第一个元素

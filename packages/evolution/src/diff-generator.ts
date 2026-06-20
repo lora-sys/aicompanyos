@@ -76,17 +76,17 @@ export class DiffGenerator {
     const diffs: UserDiffItem[] = [];
 
     // 写作风格变化
-    if (patterns.writingStyleChanges) {
+    if (patterns.writingStyleChanges && currentUser.profile) {
       diffs.push({
         key: "writingStyle",
-        currentValue: currentUser.profile.writingStyle,
+        currentValue: currentUser.profile.writingStyle ?? "(未设置)",
         suggestedValue: patterns.writingStyleChanges.to,
         confidence: 0.85,
       });
     }
 
     // 新偏好字段
-    if (patterns.newPreferences) {
+    if (patterns.newPreferences && Array.isArray(currentUser.fields)) {
       for (const pref of patterns.newPreferences) {
         // 检查是否已存在该字段
         const existing = currentUser.fields.find((f) => f.key === pref.key);
@@ -103,10 +103,30 @@ export class DiffGenerator {
     if (diffs.length === 0 && patterns.topicTendencies && patterns.topicTendencies.length > 0) {
       diffs.push({
         key: "topicTendencies",
-        currentValue: currentUser.profile.topicTendencies.join(", "),
+        currentValue: (currentUser.profile?.topicTendencies ?? []).join(", "),
         suggestedValue: patterns.topicTendencies.join(", "),
         confidence: 0.7,
       });
+    }
+
+    // ★ 内容偏好结构化提取（Task 3.3）
+    if (patterns.topicTendencies && patterns.topicTendencies.length >= 2) {
+      // 当话题倾向集中时（前2个话题占比超过60%），建议更新 contentPreferences
+      const totalTopics = patterns.topicTendencies.length;
+      const topTopics = patterns.topicTendencies.slice(0, 2);
+      // 简单启发式：如果话题不多且集中，记录偏好
+      if (totalTopics <= 5) {
+        diffs.push({
+          key: "contentPreferences",
+          currentValue: JSON.stringify(currentUser.contentPreferences ?? {}),
+          suggestedValue: JSON.stringify({
+            preferredContentTypes: [],
+            preferredTopics: topTopics,
+            avgSatisfactionScore: 0,
+          }),
+          confidence: 0.65,
+        });
+      }
     }
 
     return diffs;
@@ -122,7 +142,7 @@ export class DiffGenerator {
     guardSummary?: { totalGoals: number; verifiedGoals: number; stopReason?: string },
   ): Omit<SelfExperienceEntry, "entryId" | "timestamp"> {
     // 综合成功/失败模式 + Critic 评估 + Guard 结果生成经验教训
-    const relevantPatterns = taskSuccess ? patterns.successPatterns : patterns.failurePatterns;
+    const relevantPatterns = taskSuccess ? (patterns.successPatterns ?? []) : (patterns.failurePatterns ?? []);
     let patternSummary: string;
     if (relevantPatterns.length > 0) {
       patternSummary = relevantPatterns.join("; ");
@@ -150,16 +170,42 @@ export class DiffGenerator {
     };
 
     // 如果有工具使用效率问题，记录能力变化
-    if (patterns.toolUsage.usageEfficiencyTips.length > 0) {
+    const efficiencyTips = patterns.toolUsage?.usageEfficiencyTips ?? [];
+    if (efficiencyTips.length > 0) {
       entry.capabilityDelta = {
-        improvedStrategies: patterns.toolUsage.usageEfficiencyTips,
+        improvedStrategies: efficiencyTips,
       };
     }
-    if (patterns.toolUsage.failedTools.length > 0) {
+    const failedTools = patterns.toolUsage?.failedTools ?? [];
+    if (failedTools.length > 0) {
       entry.capabilityDelta = {
         ...entry.capabilityDelta,
-        discoveredLimitations: patterns.toolUsage.failedTools.map((f) => f.toolName),
+        discoveredLimitations: failedTools.map((f) => f.toolName),
       };
+    }
+
+    // ★ 高分任务：将成功策略写入 improvedStrategies（Prompt 知识库）
+    if (taskSuccess && criticSummary && criticSummary.totalScore > 85) {
+      const strategies: string[] = entry.capabilityDelta?.improvedStrategies ?? [];
+
+      // 从成功模式中提炼策略
+      if (patterns.successPatterns.length > 0) {
+        strategies.push(...patterns.successPatterns.slice(0, 3));
+      }
+
+      // 从 Critic 高分维度中提炼策略
+      const highDims = (criticSummary.dimensionScores ?? [])
+        .filter((d) => d.rawScore >= (d.maxScore * 0.8));
+      for (const dim of highDims.slice(0, 2)) {
+        strategies.push(`${dim.dimensionName}: ${dim.comment ?? "表现优秀"}`);
+      }
+
+      if (strategies.length > 0) {
+        entry.capabilityDelta = {
+          ...entry.capabilityDelta,
+          improvedStrategies: [...new Set(strategies)], // 去重
+        };
+      }
     }
 
     return entry;
@@ -205,8 +251,9 @@ export class DiffGenerator {
       if (patterns.failurePatterns.length > 0) {
         lessons.push(`需避免: ${patterns.failurePatterns.slice(0, 3).join(", ")}`);
       }
-      if (patterns.toolUsage.failedTools.length > 0) {
-        const failedNames = patterns.toolUsage.failedTools.map((f) => f.toolName).join(", ");
+      const failedToolsForLesson = patterns.toolUsage?.failedTools ?? [];
+      if (failedToolsForLesson.length > 0) {
+        const failedNames = failedToolsForLesson.map((f) => f.toolName).join(", ");
         lessons.push(`工具 ${failedNames} 需要更谨慎使用或寻找替代方案`);
       }
     } else {
@@ -214,9 +261,9 @@ export class DiffGenerator {
       if (patterns.successPatterns.length > 0) {
         lessons.push(`有效策略: ${patterns.successPatterns.join(", ")}`);
       }
-      if (patterns.preferences.newPreferences?.length) {
+      if ((patterns.preferences?.newPreferences?.length ?? 0) > 0) {
         lessons.push(
-          `发现用户新偏好: ${patterns.preferences.newPreferences.map((p: { key: string }) => p.key).join(", ")}`,
+          `发现用户新偏好: ${patterns.preferences!.newPreferences!.map((p: { key: string }) => p.key).join(", ")}`,
         );
       }
     }

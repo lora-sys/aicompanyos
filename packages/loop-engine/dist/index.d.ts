@@ -1,4 +1,4 @@
-export { LoopState, type StateTransition, type StateChangeEvent, type TransitionGuard, type StateHook, type LoopContext, type ExecutionPlan, type PlanStep, type TaskProfile, } from "./types.js";
+export { LoopState, type StateTransition, type StateChangeEvent, type TransitionGuard, type StateHook, type LoopContext, type ExecutionPlan, type PlanStep, type TaskProfile, type WorkerRole, } from "./types.js";
 export { LoopStateMachine } from "./state-machine.js";
 export { ToolCategory, type ToolDefinition, type ToolExecuteRequest, type ToolExecuteResult, type ToolHandler, ToolRegistry, } from "./tool-registry/registry.js";
 export { MCPToolsAdapter } from "./tool-registry/mcp-tools-adapter.js";
@@ -9,6 +9,7 @@ export { type InterrogationQuestion, type InterrogationSession, type LLMProvider
 export { PlanEngine, } from "./plan/engine.js";
 export { type PlanGenerationInput, type PlanGenerationResult, } from "./plan/types.js";
 export { ExecutionOrchestrator, } from "./orchestrator/engine.js";
+export { GenericAgent, type GenericAgentConfig, } from "./orchestrator/generic-agent.js";
 export { type StepExecutionResult, type OrchestratorConfig, type AgentExecutor, type StandardAgentContext, type OrchestratorAgentContext, type EvidenceChainRef, type MemoryManagerRef, } from "./orchestrator/types.js";
 export { ConsensusLock, } from "./consensus/engine.js";
 export { ConsensusVote, type ConsensusResult, type ConsensusConfig, } from "./consensus/types.js";
@@ -27,6 +28,9 @@ export { retryWithBackoff, CircuitBreaker, } from "./utils/retry.js";
 export type { RetryOptions, CircuitBreakerOptions, } from "./utils/retry.js";
 export { LoopHarness, } from "./loop-harness/index.js";
 export type { LoopHarnessConfig, DynamicExample, StepLoopIteration, StepLoopResult, HarnessExecutionResult, } from "./loop-harness/index.js";
+export type { IInnerLoopEngine, InnerLoopConfig, InnerLoopResult, InnerLoopIteration, InnerLoopStopReason, } from "./loop-harness/inner-loop-types.js";
+export { LegacyInnerLoopDriver, } from "./loop-harness/legacy-driver.js";
+export { PiAgentInnerLoopDriver, } from "./loop-harness/pi-agent-driver.js";
 export { THRESHOLDS, THRESHOLD_PROFILES, getThresholdsForProfile } from "./config/thresholds.js";
 export type { ThresholdKey, ThresholdProfile } from "./config/thresholds.js";
 export { LoopModule, SimpleEvolutionAgent, DEFAULT_WRITING_CRITERIA, formatCriteriaForEvaluator, formatCriteriaForGenerator, } from "./loop-module/index.js";
@@ -39,7 +43,7 @@ export { PiAgentLoopEngine, } from "./pi-agent-adapter.js";
 export type { PiAgentLoopEngineConfig, PiAgentIteration, PiAgentLoopResult, IPiWriterAgent, IPiCriticAgent, } from "./pi-agent-adapter.js";
 export { StopPolicy, evaluateStop, isSignificantImprovement, DEFAULT_STOP_POLICY_CONFIG, } from "./stop-policy/policy.js";
 export type { StopPolicyConfig, StopContext, StopDecision, StopReason, } from "./stop-policy/policy.js";
-export { TaskAnalyzer, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, HistoryReader, DEFAULT_HISTORY_READER_CONFIG, } from "./team/index.js";
-export type { WorkerRole, IWorker, WorkerConfig, TaskFeatures, ContentDomain, ITeam, TeamCompositionRule, TeamWorkerDef, ITeamManager, TeamContext, AgentFactory, IWorkerRegistry, WorkerRegistration, } from "./team/index.js";
+export { TaskAnalyzer, findSimilarCases, TeamComposer, TeamManager, WorkerRegistry, globalWorkerRegistry, HistoryReader, DEFAULT_HISTORY_READER_CONFIG, } from "./team/index.js";
+export type { IWorker, WorkerConfig, TaskFeatures, ContentDomain, ITeam, TeamCompositionRule, TeamWorkerDef, ITeamManager, TeamContext, AgentFactory, WorkerFactoryDeps, IWorkerRegistry, WorkerRegistration, } from "./team/index.js";
 export { WORKER_ROLES, LENGTH_THRESHOLDS } from "./team/index.js";
 //# sourceMappingURL=index.d.ts.map

@@ -1,6 +1,7 @@
+import type { WorkerRole } from "../types.js";
 export interface StepExecutionResult {
     stepId: string;
-    agentType: string;
+    agentType: WorkerRole | string;
     success: boolean;
     output: unknown;
     error?: string;

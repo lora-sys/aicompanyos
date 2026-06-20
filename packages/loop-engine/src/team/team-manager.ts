@@ -12,9 +12,11 @@
  * 文件位置：packages/loop-engine/src/team/team-manager.ts
  */
 
-import type { ITeam, ITeamManager, TaskFeatures, TeamContext } from "./types.js";
+import type { ITeam, ITeamManager, TaskFeatures, TeamContext, AgentFactory, WorkerFactoryDeps } from "./types.js";
 import { TaskAnalyzer } from "./task-analyzer.js";
 import { TeamComposer } from "./team-composer.js";
+import { globalWorkerRegistry } from "./worker-registry.js";
+import type { IWorkerRegistry } from "./types.js";
 
 // ============================================================
 // TeamManager 实现
@@ -34,13 +36,17 @@ import { TeamComposer } from "./team-composer.js";
 export class TeamManager implements ITeamManager {
   private analyzer: TaskAnalyzer;
   private composer: TeamComposer;
+  private registry: IWorkerRegistry;
+  private lastTeam: ITeam | null = null;
 
   constructor(config: {
     rules: import("./types.js").TeamCompositionRule[];
     customAnalyzer?: TaskAnalyzer;
+    registry?: IWorkerRegistry;
   }) {
     this.analyzer = config.customAnalyzer ?? new TaskAnalyzer();
     this.composer = new TeamComposer(config.rules);
+    this.registry = config.registry ?? globalWorkerRegistry;
   }
 
   /**
@@ -87,6 +93,8 @@ export class TeamManager implements ITeamManager {
       createdAt: new Date(),
     };
 
+    this.lastTeam = team;
+
     console.log(
       `[TeamManager] 团队组建完成: "${team.id}" (${workers.length} 个 Worker, ` +
       `规则="${matchedRuleId}")`
@@ -110,19 +118,50 @@ export class TeamManager implements ITeamManager {
    * @param team composeTeam() 返回的团队
    * @returns agentType 字符串 → 空占位（需调用方填充实际 factory）
    */
-  createWorkerFactories(team: ITeam): Map<string, import("./types.js").AgentFactory> {
-    const factories = new Map<string, import("./types.js").AgentFactory>();
+  createWorkerFactories(team: ITeam): Map<string, AgentFactory> {
+    const factories = new Map<string, AgentFactory>();
 
     for (const worker of team.workers) {
-      // 这里只记录 agentType，实际的 factory 由调用方注入
-      // 设计理由：TeamManager 是纯编排层，不依赖具体的 Agent 实现
       if (!factories.has(worker.agentType)) {
-        // 占位：返回 null 作为标记，调用方需要替换为真实 factory
-        factories.set(worker.agentType, null as unknown as import("./types.js").AgentFactory);
+        factories.set(worker.agentType, null as unknown as AgentFactory);
       }
     }
 
     return factories;
+  }
+
+  /**
+   * 返回团队中各 Worker 的 AgentFactory 映射（由 CLI 层调用）
+   *
+   * 遍历当前团队的 workers，从 WorkerRegistry 获取 defaultFactory，
+   * 如果 factory 存在且是函数，包装为 (ctx) => agent 格式返回。
+   * writer/critic 的 factory 由 LoopHarness.registerAgent 管理，不在此处返回。
+   *
+   * @param deps Worker 工厂依赖（LLM Provider + ToolRegistry）
+   * @returns agentType → AgentFactory 的映射
+   */
+  createWorkerFactoriesWithDeps(deps: WorkerFactoryDeps): Record<string, AgentFactory> {
+    const team = this.lastTeam;
+    if (!team) {
+      console.warn("[TeamManager] createWorkerFactoriesWithDeps 调用前未 composeTeam，返回空 Map");
+      return {};
+    }
+
+    const result: Record<string, AgentFactory> = {};
+
+    for (const worker of team.workers) {
+      // writer/critic 由 LoopHarness.registerAgent 管理，跳过
+      if (worker.role === "writer" || worker.role === "critic") continue;
+
+      const registration = this.registry.getByAgentType(worker.agentType);
+      if (!registration?.defaultFactory) continue;
+
+      if (typeof registration.defaultFactory === "function") {
+        result[worker.agentType] = registration.defaultFactory as AgentFactory;
+      }
+    }
+
+    return result;
   }
 
   /**

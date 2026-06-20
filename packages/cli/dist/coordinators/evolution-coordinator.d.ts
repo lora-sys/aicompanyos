@@ -1,4 +1,4 @@
-import type { ArtifactManager } from "@aicos/loop-engine";
+import type { ArtifactManager, WorkerRole } from "@aicos/loop-engine";
 import type { MemoryManager } from "@aicos/memory";
 import type { EvolutionAgent, CriticSummary } from "@aicos/evolution";
 export interface EvolutionCoordinatorDeps {
@@ -15,7 +15,7 @@ export interface EvolutionCoordinatorDeps {
     getLoopStartTime: () => number;
     getUserModificationCount: () => number;
     getCollectedDecisions: () => Array<{
-        agentType: string;
+        agentType: WorkerRole | string;
         decisionPoint: string;
         finalChoice: string;
         confidence: number;

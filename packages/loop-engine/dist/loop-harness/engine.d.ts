@@ -2,8 +2,8 @@
  * Loop Engineering Harness — 双层嵌套循环执行引擎
  *
  * 核心设计：
- * - LoopHarness 是 LoopModule 的 thin wrapper
- * - Inner Loop（Step 级）: 委托给 LoopModule.run() 执行 Writer → Critic 循环
+ * - LoopHarness 通过 IInnerLoopEngine 接口委托 Inner Loop 执行
+ * - Inner Loop（Step 级）: LegacyInnerLoopDriver 或 PiAgentInnerLoopDriver 执行 Writer → Critic 循环
  * - Outer Loop（Plan 级）: 全部 steps 完成 → Verify → 不达标 → Replan → 重新执行
  *
  * 关键原则：
@@ -11,17 +11,16 @@
  * - 退化保护：重写后 score 反而下降则终止，保留最佳版本
  * - Evidence Chain：每轮迭代都记录到证据链
  *
- * v0.2.0 变更：移除 @deprecated 的 ExecutionOrchestrator fallback 路径。
- * Writer-Critic 反馈环统一走 LoopModule 主路径。
- * ExecutionOrchestrator 仅保留用于非 Writer step（如 ui-ux）的顺序执行。
+ * v0.5.0 变更：统一 Inner Loop 引擎接口（IInnerLoopEngine）。
+ * LegacyInnerLoopDriver 和 PiAgentInnerLoopDriver 分别封装原有逻辑。
+ * LoopHarness 不再直接依赖 LoopModule 或 PiAgentLoopEngine。
  */
-import type { LoopContext, ExecutionPlan, PlanStep } from "../types.js";
+import type { LoopContext, ExecutionPlan, WorkerRole } from "../types.js";
 import type { LLMProvider } from "../interrogate/types.js";
 import type { DepartmentConfig, ProcessedOutput } from "../department/types.js";
 import type { StepExecutionResult, AgentExecutor, OrchestratorAgentContext } from "../orchestrator/types.js";
 import type { ToolRegistry } from "../tool-registry/registry.js";
-import type { IGeneratorAgent, IEvaluatorAgent, GradingCriteria } from "../loop-module/index.js";
-import { PiAgentLoopEngine } from "../pi-agent-adapter.js";
+import type { GradingCriteria } from "../loop-module/index.js";
 interface CriticOutputData {
     overallScore: number;
     dimensions: Record<string, {
@@ -38,11 +37,6 @@ interface CriticOutputData {
     }>;
     reasoning: string;
 }
-/** Writer 输出类型（兼容 LoopModule 的泛型输出） */
-interface WriterOutput {
-    content?: string;
-    [key: string]: unknown;
-}
 /** Inner Loop 配置 */
 export interface LoopHarnessConfig {
     /** Inner Loop: 单步最大重写次数 */
@@ -57,23 +51,18 @@ export interface LoopHarnessConfig {
     departmentConfig?: DepartmentConfig;
     /**
      * ★ ADR-005: 输出后处理器（由 CLI 层传入，避免循环依赖）
-     *
-     * 签名: (rawContent: string, context: { rawContent, metadata?, taskId? }) => Promise<ProcessedOutput>
-     *
-     * LoopHarness 不直接依赖 @aicos/content-production，
-     * 而是通过此函数实现 OutputPipeline 的执行。
      */
     outputProcessor?: (rawContent: string, context: {
         rawContent: string;
         metadata?: Record<string, unknown>;
         taskId?: string;
     }) => Promise<ProcessedOutput>;
-    /** 是否使用基于 pi-agent-core 的新一代循环引擎（默认 false 保持向后兼容） */
+    /** 是否使用基于 pi-agent-core 的驱动（默认 false 保持向后兼容） */
     usePiAgentCore?: boolean;
     /**
      * pi-ai Model（启用 agentLoop 驱动时需要）。
-     * 若提供且 usePiAgentCore=true，PiAgentLoopEngine 将使用 runAgentLoop 驱动迭代；
-     * 否则退回到兼容的手搓循环。
+     * 若提供且 usePiAgentCore=true，使用 PiAgentInnerLoopDriver；
+     * 否则使用 LegacyInnerLoopDriver。
      */
     model?: import("@earendil-works/pi-ai").Model<any>;
     /** Inner Loop 每次迭代开始时回调 */
@@ -150,15 +139,15 @@ export interface HarnessExecutionResult {
 /**
  * Loop Engineering Harness
  *
- * 包装 LoopModule，在 Step 级别实现 Writer-Critic 反馈环。
+ * 通过 IInnerLoopEngine 接口委托 Inner Loop 执行。
  * 每个 Writer step 执行后自动触发 Critic 审核，
  * 如果评分不达标则用 Critic 的完整反馈注入 Writer 重写。
  *
- * 所有 Writer-Critic 配对 step 均通过 LoopModule.run() 执行，
- * 非 Writer step（如 ui-ux）仍通过 ExecutionOrchestrator 顺序执行。
+ * Writer-Critic 配对 step 通过 IInnerLoopEngine 执行，
+ * 非 Writer step（如 ui-ux）通过 ExecutionOrchestrator 顺序执行。
  */
 export declare class LoopHarness {
-    private loopModule;
+    private innerLoopEngine;
     private orchestrator;
     private config;
     private llmProvider;
@@ -168,41 +157,23 @@ export declare class LoopHarness {
     private criteria;
     private currentProfile?;
     private dynamicExamples?;
-    private piAgentEngine;
-    private piEventForwarder;
+    private promptPrefix?;
+    private originalTaskInput?;
     constructor(toolRegistry: ToolRegistry, llmProvider: LLMProvider, config?: Partial<LoopHarnessConfig>);
     /** 获取当前配置（只读） */
     getConfig(): Readonly<LoopHarnessConfig>;
     /**
-     * ★ 获取 pi-agent-core 引擎实例（用于 CLI/TUI 事件订阅）
-     *
-     * 仅在 usePiAgentCore=true 时有值。
-     * 可用于订阅 AgentEvent（agent_start/turn_end/tool_execution_* 等）并转发到 TUI 渲染层。
-     */
-    getPiAgentEngine(): PiAgentLoopEngine<PlanStep, WriterOutput> | null;
-    /**
      * ★ 设置 pi-agent-core 事件转发回调
-     *
-     * CLI/TUI 层调用此方法注册事件监听器。
-     * 当 PiAgentLoopEngine 产生 AgentEvent 时，自动转发到此回调。
-     *
-     * @example
-     * ```ts
-     * loopHarness.setPiEventForwarder((event) => {
-     *   if (event.type === "turn_end") {
-     *     tui.renderIteration(event.message);
-     *   }
-     * });
-     * ```
      */
     setPiEventForwarder(forwarder: (event: any) => void): void;
+    private _pendingEventForwarder;
     /**
      * 注册 Agent 工厂
      *
-     * writer / critic 类型注册为 IGeneratorAgent / IEvaluatorAgent 工厂 → LoopModule 主路径
+     * writer / critic 类型注册为 Inner Loop 的 Writer/Critic 工厂
      * 其他类型（如 ui-ux）注册为 AgentExecutor 工厂 → ExecutionOrchestrator 顺序执行
      */
-    registerAgent(agentType: string, factory: (ctx: OrchestratorAgentContext) => AgentExecutor | IGeneratorAgent<any, any> | IEvaluatorAgent): void;
+    registerAgent(agentType: WorkerRole | string, factory: (ctx: OrchestratorAgentContext) => AgentExecutor | any): void;
     /**
      * 设置评估标准（GradingCriteria）
      *
@@ -210,6 +181,15 @@ export declare class LoopHarness {
      * 如果不设置，将使用 DEFAULT_WRITING_CRITERIA。
      */
     setCriteria(criteria: GradingCriteria): void;
+    /**
+     * 设置历史上下文前缀（由 HistoryReader 生成）
+     *
+     * 前缀会在每轮 Writer 调用前自动拼接到任务描述中，
+     * 使 Writer 能够参考历史经验和能力画像进行创作。
+     *
+     * @param prefix HistoryReader.buildPromptPrefix() 生成的前缀文本
+     */
+    setPromptPrefix(prefix: string): void;
     /**
      * 设置动态 Few-shot 样例 (v0.2.0)
      *
@@ -237,13 +217,17 @@ export declare class LoopHarness {
      */
     setOutputProcessor(processor: NonNullable<LoopHarnessConfig["outputProcessor"]>): void;
     /**
-     * 检查是否可以使用 LoopModule 主路径
+     * 检查是否可以使用 Inner Loop 引擎
      */
-    private canUseLoopModule;
+    private canUseInnerLoopEngine;
     /**
-     * 延迟创建/获取 LoopModule 实例
+     * 延迟创建/获取 IInnerLoopEngine 实例
+     *
+     * 根据 usePiAgentCore 配置选择：
+     * - true → PiAgentInnerLoopDriver（pi-agent-core 驱动）
+     * - false → LegacyInnerLoopDriver（原有手搓循环）
      */
-    private getOrCreateLoopModule;
+    private getOrCreateInnerLoopEngine;
     /**
      * 构建感知任务档位的 GradingCriteria
      *
@@ -257,39 +241,23 @@ export declare class LoopHarness {
      * 执行完整计划（带 Inner Loop）
      *
      * 对每个 Writer step（有后续 Critic step 配对）：
-     *   → 使用 LoopModule.run() 执行 Generator → Evaluator 循环
+     *   → 使用 IInnerLoopEngine.run() 执行 Generator → Evaluator 循环
      *
      * 非 Writer step（如 ui-ux）：
      *   → 通过 ExecutionOrchestrator 顺序执行
      */
     executeWithLoop(plan: ExecutionPlan, context: LoopContext, agentContext?: OrchestratorAgentContext): Promise<HarnessExecutionResult>;
     /**
-     * 使用 LoopModule 或 PiAgentLoopEngine 执行 Writer → Critic 反馈循环
+     * 使用 IInnerLoopEngine 执行 Writer → Critic 反馈循环
      *
-     * 流程：
-     * 1. 检查 usePiAgentCore 配置标志
-     * 2. 若启用 → 使用 PiAgentLoopEngine（pi-agent-core 驱动）
-     * 3. 否则 → 使用 LoopModule（原有手搓引擎，向后兼容）
-     * 4. 将结果统一转换为 StepLoopResult 格式
+     * 统一入口：不再区分 LoopModule / PiAgentLoopEngine，
+     * 由 getOrCreateInnerLoopEngine() 根据配置选择 driver。
      */
-    private executeWithLoopModule;
+    private executeWithInnerLoopEngine;
     /**
-     * 将 LoopModuleResult 转换为 StepLoopResult
+     * 将统一的 InnerLoopResult 转换为 StepLoopResult
      */
-    private convertToStepLoopResult;
-    /**
-     * 延迟创建/获取 PiAgentLoopEngine 实例
-     *
-     * 复用已注册的 writer/critic 工厂，
-     * 将 IGeneratorAgent/IEvaluatorAgent 适配为 IPiWriterAgent/IPiCriticAgent 接口。
-     */
-    private getOrCreatePiAgentEngine;
-    /**
-     * 将 PiAgentLoopResult 转换为 StepLoopResult 格式
-     *
-     * 与 convertToStepLoopResult() 结构一致，确保下游代码无感知。
-     */
-    private convertPiResultToStepLoopResult;
+    private convertInnerLoopResult;
     /**
      * ★ ADR-005: 从 finalOutputs 中提取原始文本内容
      *

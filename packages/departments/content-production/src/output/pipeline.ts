@@ -197,7 +197,12 @@ async function executeMetadataInjector(
 
   // ★ 策略2：从 Markdown h1 提取
   if (!effectiveTitle) {
-    const h1Match = result.match(/^#\s+(.+)$/m);
+    // 优先从原始 markdown 中提取标题
+    let h1Match = context.rawContent?.match(/^#\s+(.+)$/m);
+    if (!h1Match) {
+      // 回退到 HTML 中的 <h1> 标签
+      h1Match = result.match(/<h1[^>]*>(.*?)<\/h1>/is);
+    }
     if (h1Match) {
       effectiveTitle = h1Match[1].trim();
     }
@@ -208,7 +213,7 @@ async function executeMetadataInjector(
     for (const line of result.split("\n")) {
       const trimmed = line.trim();
       // 跳过空行、markdown 标记、代码块标记
-      if (trimmed && !trimmed.startsWith("#") && !trimmed.startsWith("```") && !trimmed.startsWith("---") && !trimmed.startsWith("<")) {
+      if (trimmed && !trimmed.startsWith("#") && !trimmed.startsWith("```") && !trimmed.startsWith("---") && !trimmed.startsWith("<") && !trimmed.startsWith("|")) {
         // 截取前 60 字符作为标题
         effectiveTitle = trimmed.slice(0, 60).replace(/\*|`|#/g, "").trim();
         if (effectiveTitle.length > 0) break;

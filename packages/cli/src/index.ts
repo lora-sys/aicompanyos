@@ -128,13 +128,13 @@ async function setupInteractiveInput(app: AICOSApp): Promise<void> {
     return;
   }
 
-  // ★★★ TTY 环境：如果 pi-tui 已接管 stdin，不再创建 readline！
+  // ★★★ TTY 环境：如果 TUIManager 已接管 stdin，不再创建 readline！
   // pi-tui 的 ProcessTerminal.start() 已调用 setRawMode(true) 并注册 data 监听器，
   // 如果同时创建 readline，两者会竞争 stdin 数据，导致：
   // 1. readline close() 恢复 raw mode → pi-tui 无法接收输入
   // 2. readline close() 后事件循环空转 → Node.js 进程退出
   // 3. 两次 handleInput() 调用 → 状态混乱
-  if (app["tui"]) {
+  if ((app as any).tuiManager?.isInitialized) {
     // pi-tui 已接管输入，不需要 readline
     return;
   }

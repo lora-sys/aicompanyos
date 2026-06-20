@@ -62,6 +62,8 @@ export interface LoopContext {
     }>;
     extensions?: Record<string, unknown>;
 }
+import type { WorkerRole as WorkerRoleBase } from "./team/types.js";
+export type WorkerRole = WorkerRoleBase;
 export type TaskProfile = "technical-blog" | "tutorial" | "design-doc" | "code-review" | "generic";
 export interface ExecutionPlan {
     id: string;
@@ -72,10 +74,13 @@ export interface ExecutionPlan {
 }
 export interface PlanStep {
     stepId: string;
-    agentType: "writer" | "critic" | "ui-ux";
+    /** 执行该步骤的 Agent 类型（已知角色编译期可检查，动态团队可扩展为任意 string） */
+    agentType: WorkerRole | string;
     description: string;
     expectedOutput: string;
     toolsNeeded: string[];
+    /** 可选：依赖的上游 stepId，用于构建执行上下文 */
+    dependsOn?: string[];
     /** ★ ADR-004: 扩展元数据（用于存储 AcceptanceGoals 等） */
     metadata?: Record<string, unknown>;
 }

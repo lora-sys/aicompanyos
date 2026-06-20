@@ -24,3 +24,7 @@ export type { CriticInput, CriticOutput } from "./critic/types.js";
 // Researcher Agent 导出（Loop Engineering: MCP 搜索）
 export { ResearcherAgent } from "./researcher/agent.js";
 export type { ResearcherInput, ResearcherOutput, ResearchSource } from "./researcher/types.js";
+
+// Reviewer Agent 导出（最终审查角色）
+export { ReviewerAgent } from "./reviewer/agent.js";
+export type { ReviewDimension, ReviewSuggestion, ReviewerOutput } from "./reviewer/types.js";

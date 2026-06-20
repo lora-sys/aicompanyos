@@ -328,7 +328,12 @@ export function formatCriteriaForEvaluator(criteria: GradingCriteria): string {
 
   lines.push(``);
   lines.push(`═══ 输出格式要求 ═══`);
-  lines.push(`返回 JSON: { totalScore, dimensionScores: [{dimensionId, rawScore, comment}], suggestions: [{dimensionId, severity, description, suggestion}], reasoning }`);
+  lines.push(`将评估结果严格包裹在 json markdown 代码块中：`);
+  lines.push(`\`\`\`json`);
+  lines.push(`{ "totalScore": 85, "dimensionScores": [{ "dimensionId": "topic_accuracy", "rawScore": 17, "comment": "..." }], "suggestions": [{ "dimensionId": "topic_accuracy", "severity": "minor", "description": "...", "suggestion": "..." }], "reasoning": "..." }`);
+  lines.push(`\`\`\``);
+  lines.push(`注意：必须使用 markdown code block 包裹，不要将 JSON 裸露在正文中。`);
+  lines.push(`JSON 必须包含 totalScore、dimensionScores、suggestions、reasoning 字段。`);
 
   return lines.join("\n");
 }

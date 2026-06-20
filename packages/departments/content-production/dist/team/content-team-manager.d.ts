@@ -11,7 +11,7 @@
  *
  * 文件位置：packages/departments/content-production/src/team/content-team-manager.ts
  */
-import type { ITeamManager, ITeam, TeamContext, AgentFactory, IWorkerRegistry } from "@aicos/loop-engine";
+import type { ITeamManager, ITeam, TeamContext, AgentFactory, IWorkerRegistry, WorkerFactoryDeps } from "@aicos/loop-engine";
 import type { ContentTeamConfig } from "./types.js";
 /**
  * 内容产出部团队经理
@@ -32,6 +32,10 @@ export declare class ContentTeamManager implements ITeamManager {
     private inner;
     private teamConfig;
     private contentType;
+    /** 最近一次组建的团队（供 createWorkerFactoriesWithDeps 使用） */
+    private lastTeam;
+    /** Worker 注册表引用（供 createWorkerFactoriesWithDeps 查找 factory） */
+    private registry;
     constructor(config: {
         contentType: import("@aicos/loop-engine").ContentType;
         teamConfig?: Partial<ContentTeamConfig>;
@@ -52,6 +56,17 @@ export declare class ContentTeamManager implements ITeamManager {
      * 实际 Factory 由调用方（CLI / LoopHarness）注入。
      */
     createWorkerFactories(team: ITeam): Map<string, AgentFactory>;
+    /**
+     * 返回团队中各 Worker 的 AgentFactory 映射（由 CLI 层调用）
+     *
+     * 遍历当前团队的 workers，从 WorkerRegistry 获取 defaultFactory，
+     * 如果 factory 存在且不是 null，包装为 (ctx) => agent 格式返回。
+     * writer/critic 的 factory 由 LoopHarness.registerAgent 管理，不在此处返回。
+     *
+     * @param deps Worker 工厂依赖（LLM Provider + ToolRegistry）
+     * @returns agentType → AgentFactory 的映射
+     */
+    createWorkerFactoriesWithDeps(deps: WorkerFactoryDeps): Record<string, AgentFactory>;
     /**
      * 注册内容产出部的所有 Worker 到指定 Registry
      *

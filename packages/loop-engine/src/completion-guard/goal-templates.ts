@@ -11,13 +11,14 @@
  */
 
 import type { AcceptanceGoal, VerificationMethod } from "./types.js";
+import type { WorkerRole } from "../types.js";
 
 /** 目标模板 — 根据上下文生成具体的 AcceptanceGoal */
 export interface GoalTemplate {
   /** 匹配条件 */
   match: {
-    /** 匹配的 agentType（* 表示全部） */
-    agentType: string | "*";
+    /** 匹配的 agentType（已知角色编译期可检查，* 表示全部） */
+    agentType: WorkerRole | string;
     /** description 中的关键词（任一匹配即触发，空数组表示无条件） */
     keywords?: string[];
     /** description 中的反关键词（包含则排除） */
@@ -52,7 +53,7 @@ export class GoalTemplateRegistry {
    * @param description Step 描述
    * @returns 生成的 AcceptanceGoal 列表（无匹配则返回空数组）
    */
-  generateGoals(stepId: string, agentType: string, description: string): AcceptanceGoal[] {
+  generateGoals(stepId: string, agentType: WorkerRole | string, description: string): AcceptanceGoal[] {
     const lowerDesc = description.toLowerCase();
 
     // 优先检查自定义模板
@@ -73,7 +74,7 @@ export class GoalTemplateRegistry {
   }
 
   /** 检查模板是否匹配 */
-  private matchesTemplate(template: GoalTemplate, agentType: string, lowerDesc: string): boolean {
+  private matchesTemplate(template: GoalTemplate, agentType: WorkerRole | string, lowerDesc: string): boolean {
     if (template.match.agentType !== "*" && template.match.agentType !== agentType) {
       return false;
     }

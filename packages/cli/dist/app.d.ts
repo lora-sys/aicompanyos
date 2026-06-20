@@ -1,14 +1,13 @@
-import { type LLMProvider } from "@aicos/loop-engine";
-import type { ContentType } from "@aicos/loop-engine";
+import { type LLMProvider, type ContentType } from "@aicos/loop-engine";
 /**
  * AI Company OS CLI 应用
  * 负责初始化所有组件、管理应用状态、协调 Loop 执行流程
  */
 export declare class AICOSApp {
-    /** TUI 实例（pi-tui 差分渲染引擎） */
-    private tui;
-    /** pi-tui Terminal 实例 */
-    private terminal;
+    /** TUI 管理器（封装 pi-tui 生命周期） */
+    private tuiManager;
+    /** 部门设置协调器（封装部门切换、团队组建、Agent 注册） */
+    private departmentSetup;
     /** 应用状态 */
     private state;
     /** Loop 状态机 */
@@ -21,8 +20,6 @@ export declare class AICOSApp {
     private interrogateCoordinator;
     /** 规划引擎 */
     private planEngine;
-    /** 编排器 */
-    private orchestrator;
     /** 验证引擎 */
     private verifyEngine;
     /** 回滚管理器 */
@@ -31,18 +28,6 @@ export declare class AICOSApp {
     private artifactManager;
     /** 记忆管理器（self.jsonl / user.jsonl / self.md / user.md） */
     private memoryManager;
-    /** 流式内容区 Markdown 组件（动态 setText 更新） */
-    private streamMarkdown;
-    /** 流式内容累积文本 */
-    private streamContent;
-    /** 底部输入框组件 */
-    private inputComponent;
-    /** 执行中输入框锁定标记 */
-    private inputLocked;
-    /** Header Text 组件引用（用于增量更新） */
-    private headerText;
-    /** StatusBar Text 组件引用（用于增量更新） */
-    private statusBarText;
     /** LLM Provider */
     private llmProvider;
     /** 工具注册表 */
@@ -61,12 +46,6 @@ export declare class AICOSApp {
     private evolutionCoordinator;
     /** executeLoop 开始时间（用于进化阶段计算 executionDuration） */
     private loopStartTime;
-    /** 当前选中的内容格式 */
-    private selectedContentType;
-    /** 当前激活的部门配置 */
-    private activeDepartmentConfig;
-    /** 内容产出部实例 */
-    private contentDept;
     /** 最近一次 Critic 评估摘要（用于进化阶段沉淀） */
     private lastCriticSummary?;
     /** 最近一次 CompletionGuard 摘要（用于进化阶段沉淀） */
@@ -89,64 +68,25 @@ export declare class AICOSApp {
      */
     start(): Promise<void>;
     /**
-     * 重建整个 TUI 组件树（Claude Code 风格：上方流式 + 下方输入框）
-     *
-     * 布局结构：
-     * ┌──────────────────────────────────────┐
-     * │ Header: 状态栏                        │
-     * ├──────────────────────────────────────┤
-     * │                                      │
-     * │  流式内容区 (Markdown)                │  ← 70%
-     * │  - Writer 产出                       │
-     * │  - Critic 评估                       │
-     * │  - 工具调用过程                       │
-     * │  - 目标完成度进度                     │
-     * │                                      │
-     * ├──────────────────────────────────────┤
-     * │ > 输入框 (Input)                     │  ← 底部固定
-     * │ 状态提示 + 快捷键                     │
-     * └──────────────────────────────────────┘
-     */
-    private rebuildLayout;
-    /** 构建 Header 文本 */
-    private buildHeaderText;
-    /** 构建 StatusBar 文本 */
-    private buildStatusBarText;
-    /** ★ 增量更新 Header 和 StatusBar（更新流式内容的首行和末行） */
-    private updateHeaderContent;
-    private updateStatusBarContent;
-    /**
      * 主渲染入口
-     * TUI 模式：重建组件树并请求重绘
+     * TUI 模式：请求重绘
      * 非TUI模式：回退到终端输出
      */
     render(): void;
-    /** 构建顶栏组件: Box + Text（应用名 + 状态 + TaskID） */
-    private buildHeaderComponent;
     /** 构建主区域组件: 根据 mode 返回不同内容 */
     private buildMainComponent;
     /** 构建拷问 Modal 组件（Box overlay 风格） */
     private buildModalComponent;
     /** ★ 构建执行进度组件（PLANNING/EXECUTING 状态下替代空白 Modal） */
     private buildProgressComponent;
-    /** ★ 构建底部状态栏组件（快捷键提示 + 状态信息） */
-    private buildStatusBarComponent;
     /**
      * 追加流式内容到 Markdown 区域
-     *
-     * 所有 Agent 产出、评估、工具调用、进度信息都通过此方法追加。
-     * 自动触发 TUI 重绘。
+     * 委托给 TUIManager.appendStream()
      */
     private appendStream;
     /**
-     * 清空流式内容区
-     */
-    private clearStream;
-    /**
      * ★ 锁定/解锁输入框
-     *
-     * 执行中锁定输入框，完成后解锁。
-     * ★ 每次解锁后重新聚焦 Input 组件，确保键盘事件正确分发。
+     * 委托给 TUIManager.setInputLocked()
      */
     private setInputLocked;
     /** 构建侧边栏组件: MCP 状态 + 工具列表 */
@@ -199,30 +139,12 @@ export declare class AICOSApp {
     showContentTypeMenu(): void;
     /**
      * 选择内容格式并加载对应部门配置
-     *
-     * 这是 ADR-005 部门路由的核心方法：
-     * 1. 根据 contentType 获取 DepartmentConfig
-     * 2. 将配置注入 LoopHarness
-     * 3. 将 Writer Prompt 注入 WriterAgent
-     * 4. 将 Critic 维度注入 CriticAgent
+     * 委托给 DepartmentSetup.selectContentType()
      */
     selectContentType(type: string | ContentType): Promise<void>;
-    /** 保存原始 console 方法 */
-    private _originalConsoleLog;
-    private _originalConsoleWarn;
-    private _originalConsoleError;
-    /**
-     * ★ 拦截 console.log/warn/error → 静默丢弃
-     *
-     * TUI 模式下 console.log 直接输出会破坏差分渲染。
-     * 关键日志已通过回调机制输出到流式内容区，console.log 全部静默。
-     */
-    private interceptConsoleToStream;
-    private interceptConsole;
     /**
      * ★ 恢复原始 console 方法
-     *
-     * 在退出 TUI 模式前调用，确保后续输出正常。
+     * 委托给 TUIManager.restoreConsole()
      */
     private restoreConsole;
     /**
@@ -297,28 +219,8 @@ export declare class AICOSApp {
      */
     private renderToTerminal;
     /**
-     * 将 Modal 内容渲染到终端
-     */
-    private renderModalToTerminal;
-    /**
      * 添加日志条目
      */
     private addLog;
-    /** ★ 渲染节流：最多每 200ms 重绘一次 */
-    private _renderTimer;
-    private scheduleRender;
-    /**
-     * 为 pi-agent-core 的 agentLoop 构造 pi-ai Model。
-     *
-     * 使用 pi-ai 官方 getModel 获取 OpenAI 标准模型元数据，再覆盖 baseUrl
-     * 指向 OPENAI_API_BASE（兼容 LongCat 等 OpenAI-compatible 代理）。
-     * 若环境变量未配置或模型 ID 不被 pi-ai 识别，则回退到兼容手搓循环。
-     */
-    private createPiAiModel;
-    /**
-     * 创建默认 LLM Provider
-     * 从环境变量读取配置，强制使用真实 API（禁止 Mock）
-     */
-    private createDefaultLLMProvider;
 }
 //# sourceMappingURL=app.d.ts.map

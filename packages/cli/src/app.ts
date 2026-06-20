@@ -8,7 +8,6 @@ import {
   LoopState,
   InterrogateEngine,
   PlanEngine,
-  ExecutionOrchestrator,
   VerifyEngine,
   RollbackManager,
   ArtifactManager,
@@ -16,12 +15,10 @@ import {
   LoopHarness,
   type DynamicExample,
   type TaskProfile,
-  LoopModule,
+  type WorkerRole,
   DEFAULT_WRITING_CRITERIA,
   type LLMProvider,
-  type InterrogationSession,
-  PiAILLMProvider,
-  WORKER_ROLES,
+  type ContentType,
 } from "@aicos/loop-engine";
 import { MemoryManager } from "@aicos/memory";
 import { MCPClientAdapter, EXA_MCP_CONFIG } from "@aicos/mcp";
@@ -40,49 +37,39 @@ import {
 
 // ★ ADR-005: 内容产出部 — 部门配置
 import {
-  ContentProductionDepartment,
   initDepartmentMemory,
-  contentProductionDept,
-  OutputPipeline,
 } from "@aicos/content-production";
-import type { ContentType, DepartmentConfig } from "@aicos/loop-engine";
 
 import type {
   CLIAppState,
   LogEntry,
-  ActiveModalType,
   MCPStatus,
 } from "./types.js";
-import { getModel } from "@earendil-works/pi-ai";
+import { createProviders, createHarness } from "./factories/index.js";
 import { InterrogationCoordinator } from "./coordinators/interrogation-coordinator.js";
 import { ExecutionCoordinator } from "./coordinators/execution-coordinator.js";
 import { EvolutionCoordinator } from "./coordinators/evolution-coordinator.js";
+import { DepartmentSetup } from "./coordinators/department-setup.js";
+import { TUIManager } from "./coordinators/tui-manager.js";
 
-import { InterrogateModal } from "./components/interrogate-modal.js";
-import { buildHeaderData, formatHeaderString, getStateDisplay } from "./components/header.js";
+import { getStateDisplay } from "./components/header.js";
 import {
   buildLoopVisualizationData,
   formatLoopASCII,
 } from "./components/loop-visualization.js";
 import { buildSidebarData, formatSidebarString } from "./components/sidebar.js";
-import { buildFooterData, formatFooterString } from "./components/footer.js";
+import { buildFooterData } from "./components/footer.js";
 import {
   buildEvolutionPanelData,
-  formatEvolutionString,
 } from "./components/evolution-panel.js";
 
 // ★ pi-tui 组件库 — 终端 UI 原生组件
 import {
-  TUI,
   Box,
   Text,
-  Loader,
   Markdown,
-  Input,
   SelectList,
   type Component,
-  ProcessTerminal,
-  StdinBuffer,
 } from "@earendil-works/pi-tui";
 
 /**
@@ -113,10 +100,10 @@ class EvolutionDocAdapter implements IEvolutionDocWriter {
  * 负责初始化所有组件、管理应用状态、协调 Loop 执行流程
  */
 export class AICOSApp {
-  /** TUI 实例（pi-tui 差分渲染引擎） */
-  private tui: TUI | null = null;
-  /** pi-tui Terminal 实例 */
-  private terminal: ProcessTerminal | null = null;
+  /** TUI 管理器（封装 pi-tui 生命周期） */
+  private tuiManager: TUIManager;
+  /** 部门设置协调器（封装部门切换、团队组建、Agent 注册） */
+  private departmentSetup!: DepartmentSetup;
 
   /** 应用状态 */
   private state: CLIAppState;
@@ -135,9 +122,6 @@ export class AICOSApp {
   /** 规划引擎 */
   private planEngine: PlanEngine | null = null;
 
-  /** 编排器 */
-  private orchestrator: ExecutionOrchestrator | null = null;
-
   /** 验证引擎 */
   private verifyEngine: VerifyEngine | null = null;
 
@@ -149,20 +133,6 @@ export class AICOSApp {
 
   /** 记忆管理器（self.jsonl / user.jsonl / self.md / user.md） */
   private memoryManager: MemoryManager;
-
-  // ★ Claude Code 风格 TUI 组件
-  /** 流式内容区 Markdown 组件（动态 setText 更新） */
-  private streamMarkdown: Markdown | null = null;
-  /** 流式内容累积文本 */
-  private streamContent: string = "";
-  /** 底部输入框组件 */
-  private inputComponent: Input | null = null;
-  /** 执行中输入框锁定标记 */
-  private inputLocked: boolean = false;
-  /** Header Text 组件引用（用于增量更新） */
-  private headerText: Text | null = null;
-  /** StatusBar Text 组件引用（用于增量更新） */
-  private statusBarText: Text | null = null;
 
   /** LLM Provider */
   private llmProvider: LLMProvider;
@@ -189,13 +159,6 @@ export class AICOSApp {
   /** executeLoop 开始时间（用于进化阶段计算 executionDuration） */
   private loopStartTime: number = 0;
 
-  // ★ ADR-005: 内容类型选择
-  /** 当前选中的内容格式 */
-  private selectedContentType: ContentType | null = null;
-  /** 当前激活的部门配置 */
-  private activeDepartmentConfig: DepartmentConfig | null = null;
-  /** 内容产出部实例 */
-  private contentDept = new ContentProductionDepartment();
   /** 最近一次 Critic 评估摘要（用于进化阶段沉淀） */
   private lastCriticSummary?: { totalScore: number; passed: boolean; excellent: boolean; dimensionScores: any[]; reasoning?: string };
   /** 最近一次 CompletionGuard 摘要（用于进化阶段沉淀） */
@@ -206,7 +169,7 @@ export class AICOSApp {
 
   /** 轻量级证据收集器（从 LoopHarness 回调中收集，供进化阶段构造 IEvidenceReader） */
   private collectedDecisions: Array<{
-    agentType: string;
+    agentType: WorkerRole | string;
     decisionPoint: string;
     finalChoice: string;
     confidence: number;
@@ -224,27 +187,21 @@ export class AICOSApp {
   }> = [];
 
   constructor(llmProvider?: LLMProvider) {
-    // 优先使用传入的 provider，否则尝试创建真实 Provider，最后 fallback 到 Mock
-    if (llmProvider) {
-      this.llmProvider = llmProvider;
-    } else {
-      this.llmProvider = this.createDefaultLLMProvider();
-    }
+    // ★ 使用 Provider 工厂创建 LLM Provider 和 pi-ai Model
+    const { llmProvider: provider, piAiModel } = createProviders({ llmProvider });
+    this.llmProvider = provider;
 
-    // 初始化工具注册表
-    this.toolRegistry = new ToolRegistry();
-    this.toolRegistry.registerLocalTools(this.llmProvider);
+    // ★ 初始化 TUI 管理器
+    this.tuiManager = new TUIManager();
 
-    // 初始化 Loop Harness（★ v0.4.0: 默认启用 pi-agent-core 引擎 + 流式回调）
-    const usePiCore = process.env.AICOS_USE_LEGACY_ENGINE !== "1";
-    const piModel = usePiCore ? this.createPiAiModel() : undefined;
-    this.loopHarness = new LoopHarness(this.toolRegistry, this.llmProvider, {
-      usePiAgentCore: usePiCore,
-      model: piModel,
+    // ★ 使用 Harness 工厂创建 ToolRegistry 和 LoopHarness
+    const { toolRegistry, loopHarness } = createHarness({
+      llmProvider: this.llmProvider,
+      piAiModel,
 
       // ★ v0.4.0: 执行进度回调 → 流式输出到 TUI
       onIterationStart: (iteration, stepId) => {
-        this.appendStream(`\n---\n**⏳ Iteration ${iteration}** \`${stepId}\`\n\n`);
+        this.tuiManager.appendStream(`\n---\n**⏳ Iteration ${iteration}** \`${stepId}\`\n\n`);
       },
       onWriterOutput: (content, iteration) => {
         // ★ 收集 Writer 决策证据
@@ -257,7 +214,7 @@ export class AICOSApp {
         });
         // Writer 产出：显示前 300 字预览
         const preview = content.slice(0, 300).replace(/\n/g, "\n> ");
-        this.appendStream(`\n**📝 Writer 产出** (Iteration ${iteration}):\n\n> ${preview}${content.length > 300 ? "..." : ""}\n\n`);
+        this.tuiManager.appendStream(`\n**📝 Writer 产出** (Iteration ${iteration}):\n\n> ${preview}${content.length > 300 ? "..." : ""}\n\n`);
       },
       onCriticResult: (score, passed, suggestions, iteration) => {
         // ★ 收集 Critic 决策证据
@@ -269,13 +226,13 @@ export class AICOSApp {
           outputReasoning: suggestions.slice(0, 2).join("; "),
         });
         const status = passed ? "✅ 通过" : "❌ 未通过";
-        this.appendStream(`\n**🔍 Critic 评估** (Iteration ${iteration}): **${score}/100** ${status}\n\n`);
+        this.tuiManager.appendStream(`\n**🔍 Critic 评估** (Iteration ${iteration}): **${score}/100** ${status}\n\n`);
         if (suggestions.length > 0) {
-          this.appendStream(`改进建议:\n`);
+          this.tuiManager.appendStream(`改进建议:\n`);
           for (const s of suggestions.slice(0, 3)) {
-            this.appendStream(`- ${s.slice(0, 80)}\n`);
+            this.tuiManager.appendStream(`- ${s.slice(0, 80)}\n`);
           }
-          this.appendStream("\n");
+          this.tuiManager.appendStream("\n");
         }
       },
       onGoalProgress: (verified, total, reason) => {
@@ -286,25 +243,20 @@ export class AICOSApp {
           evidence: reason,
         });
         const bar = "█".repeat(verified) + "░".repeat(total - verified);
-        this.appendStream(`**🎯 目标进度**: [${bar}] ${verified}/${total} (${reason})\n\n`);
+        this.tuiManager.appendStream(`**🎯 目标进度**: [${bar}] ${verified}/${total} (${reason})\n\n`);
       },
       onStepComplete: (stepId, score, passed) => {
         const status = passed ? "✅" : "❌";
-        this.appendStream(`\n**${status} Step 完成**: \`${stepId}\` — score: ${score}/100\n\n`);
+        this.tuiManager.appendStream(`\n**${status} Step 完成**: \`${stepId}\` — score: ${score}/100\n\n`);
       },
-    });
-    this.loopHarness.setCriteria(DEFAULT_WRITING_CRITERIA);
-
-    if (usePiCore) {
-      // ★ 连接 pi-agent-core 事件到流式内容区
-      this.loopHarness.setPiEventForwarder((event: any) => {
+      piEventForwarder: piAiModel ? (event: any) => {
         const eventType = event?.type ?? "unknown";
         if (eventType === "agent_start") {
-          this.appendStream("**▶ Agent 启动**\n\n");
+          this.tuiManager.appendStream("**▶ Agent 启动**\n\n");
         } else if (eventType === "turn_end") {
-          this.appendStream("**◆ 迭代完成**\n\n");
+          this.tuiManager.appendStream("**◆ 迭代完成**\n\n");
         } else if (eventType === "tool_execution_start") {
-          this.appendStream(`🔧 \`${event.toolName}\` 执行中...\n`);
+          this.tuiManager.appendStream(`🔧 \`${event.toolName}\` 执行中...\n`);
         } else if (eventType === "tool_execution_end") {
           const status = event.isError ? " ❌" : " ✅";
           // ★ 收集工具调用证据
@@ -312,12 +264,15 @@ export class AICOSApp {
             toolName: event.toolName ?? "unknown",
             success: !event.isError,
           });
-          this.appendStream(`🔧 \`${event.toolName}\`${status}\n\n`);
+          this.tuiManager.appendStream(`🔧 \`${event.toolName}\`${status}\n\n`);
         } else if (eventType === "agent_end") {
-          this.appendStream("**■ Agent 执行结束**\n\n");
+          this.tuiManager.appendStream("**■ Agent 执行结束**\n\n");
         }
-      });
-    }
+      } : undefined,
+    });
+
+    this.toolRegistry = toolRegistry;
+    this.loopHarness = loopHarness;
 
     // 初始化产物管理器
     this.artifactManager = new ArtifactManager();
@@ -330,7 +285,7 @@ export class AICOSApp {
       memoryManager: this.memoryManager,
       loopHarness: this.loopHarness,
       onLog: (level, source, message) => this.addLog(level, source, message),
-      onStream: (content) => this.appendStream(content),
+      onStream: (content) => this.tuiManager.appendStream(content),
       getTaskId: () => this.state.currentTaskId!,
       getTaskInput: () => this.state.currentTaskInput ?? "",
       getLoopContext: () => this.loopContext,
@@ -346,9 +301,6 @@ export class AICOSApp {
       activeModal: null,
       logs: [],
     };
-
-    // TUI 实例（延迟初始化，在 start() 中根据 TTY 环境决定）
-    // this.tui / this.terminal 已在属性声明中初始化为 null
   }
 
   /**
@@ -362,8 +314,8 @@ export class AICOSApp {
     this.interrogateEngine = new InterrogateEngine(this.llmProvider);
     this.interrogateCoordinator = new InterrogationCoordinator({
       engine: this.interrogateEngine,
-      onStream: (content) => this.appendStream(content),
-      setInputLocked: (locked) => this.setInputLocked(locked),
+      onStream: (content) => this.tuiManager.appendStream(content),
+      setInputLocked: (locked) => this.tuiManager.setInputLocked(locked),
       closeModal: () => this.closeModal(),
       getTaskId: () => this.state.currentTaskId!,
     });
@@ -378,6 +330,17 @@ export class AICOSApp {
     this.loopHarness.registerAgent("critic", () => this.criticAgent!);
 
     this.addLog("info", "app", "WriterAgent + CriticAgent 已注册到 LoopHarness");
+
+    // ★ 创建 DepartmentSetup（部门切换、团队组建、Agent 注册）
+    this.departmentSetup = new DepartmentSetup({
+      loopHarness: this.loopHarness,
+      llmProvider: this.llmProvider,
+      toolRegistry: this.toolRegistry,
+      writerAgent: this.writerAgent!,
+      criticAgent: this.criticAgent!,
+      addLog: (level: string, source: string, message: string) => this.addLog(level as any, source, message),
+      getTaskInput: () => this.state.currentTaskInput ?? "",
+    });
 
     // ★ 创建 EvolutionAgent（自进化引擎）
     const evolutionDocs = new EvolutionDocAdapter(this.memoryManager.evolution);
@@ -396,7 +359,7 @@ export class AICOSApp {
       artifactManager: this.artifactManager,
       memoryManager: this.memoryManager,
       evolutionAgent: this.evolutionAgent,
-      onStream: (content) => this.appendStream(content),
+      onStream: (content) => this.tuiManager.appendStream(content),
       getTaskId: () => this.state.currentTaskId!,
       getTaskInput: () => this.state.currentTaskInput ?? "",
       getLoopContext: () => this.loopContext,
@@ -453,50 +416,23 @@ export class AICOSApp {
     if (this.running) return;
 
     this.running = true;
+    this.tuiManager.setRunning(true);
     this.addLog("info", "app", "AI Company OS 已启动");
 
-    // ★ 初始化 pi-tui TUI（仅 TTY 环境）
-    if (process.stdin.isTTY) {
-      try {
-        this.terminal = new ProcessTerminal();
-        this.tui = new TUI(this.terminal, true); // showHardwareCursor=true
-
-        // ★ 初始化流式内容：欢迎信息
-        this.streamContent = [
-          "# AI Company OS v0.1.0",
-          "",
-          "✏️ 在下方输入框输入任务，按 Enter 提交",
-          "",
-          "命令:",
-          "- `/type seed` → 小红书风格",
-          "- `/type article` → 公众号长文",
-          "- `/type newsletter` → Newsletter",
-          "- `q` → 退出",
-          "",
-          "---",
-          "",
-        ].join("\n");
-
-        // 构建初始组件树
-        this.rebuildLayout();
-
-        // 启动 TUI 渲染循环（pi-tui 自主管理差分渲染 + 输入分发）
-        this.tui.start();
-
-        // ★ 拦截 console.log → 追加到流式内容区（而非破坏 TUI 渲染）
-        this.interceptConsoleToStream();
-
-        this.addLog("info", "app", "✅ pi-tui TUI 已启动（差分渲染模式）");
-      } catch (e) {
-        const err = e instanceof Error ? e.message : String(e);
-        this.addLog("warn", "app", `⚠️ TUI 初始化失败，回退到终端模式: ${err}`);
-        this.tui = null;
-        this.terminal = null;
-      }
-    }
+    // ★ 初始化 TUI（委托给 TUIManager）
+    await this.tuiManager.initialize({
+      appName: "AI Company OS v0.1.0",
+      onInput: (value) => this.handleInput(value),
+      onEscape: () => {
+        // ESC 跳过当前拷问问题
+        if (this.interrogateCoordinator) {
+          this.interrogateCoordinator.handleInput("__SKIP__").catch(() => { /* ignore */ });
+        }
+      },
+    });
 
     // 首次渲染（非 TUI 模式或 TUI 失败时回退）
-    if (!this.tui) {
+    if (!this.tuiManager.isInitialized) {
       console.log(formatWelcomeScreen());
       this.showContentTypeMenu();
       console.log("\n输入任务描述开始，或输入 'q' 退出。\n");
@@ -506,139 +442,30 @@ export class AICOSApp {
     // ★★★ 绝不能调用 appendStream()！如果 appendStream 本身是崩溃原因，会导致递归崩溃
     process.on("uncaughtException", (err) => {
       const msg = err instanceof Error ? err.message : String(err);
-      // 降级到原始 console（在 interceptConsoleToStream 之前保存的引用）
-      if (this._originalConsoleLog) {
-        this._originalConsoleLog("\n⚠️ 未捕获异常:", msg, "\n");
+      // 降级到原始 console（在 interceptConsole 之前保存的引用）
+      if (this.tuiManager.originalConsoleLog) {
+        this.tuiManager.originalConsoleLog("\n⚠️ 未捕获异常:", msg, "\n");
       }
       // 不退出进程，让 TUI 继续运行
     });
 
     process.on("unhandledRejection", (reason) => {
       const msg = reason instanceof Error ? reason.message : String(reason);
-      if (this._originalConsoleLog) {
-        this._originalConsoleLog("\n⚠️ 未处理的 Promise 拒绝:", msg, "\n");
+      if (this.tuiManager.originalConsoleLog) {
+        this.tuiManager.originalConsoleLog("\n⚠️ 未处理的 Promise 拒绝:", msg, "\n");
       }
       // 不退出进程，让 TUI 继续运行
     });
   }
 
   /**
-   * 重建整个 TUI 组件树（Claude Code 风格：上方流式 + 下方输入框）
-   *
-   * 布局结构：
-   * ┌──────────────────────────────────────┐
-   * │ Header: 状态栏                        │
-   * ├──────────────────────────────────────┤
-   * │                                      │
-   * │  流式内容区 (Markdown)                │  ← 70%
-   * │  - Writer 产出                       │
-   * │  - Critic 评估                       │
-   * │  - 工具调用过程                       │
-   * │  - 目标完成度进度                     │
-   * │                                      │
-   * ├──────────────────────────────────────┤
-   * │ > 输入框 (Input)                     │  ← 底部固定
-   * │ 状态提示 + 快捷键                     │
-   * └──────────────────────────────────────┘
-   */
-  private rebuildLayout(): void {
-    if (!this.tui) return;
-
-    // 清空旧子组件
-    this.tui.clear();
-
-    // ★ 整个 TUI 只有两个组件：Markdown 流式区 + Input 输入框
-    // Header 和 StatusBar 信息合并到 Markdown 内容中
-
-    // 1. 流式内容区（Markdown 组件，动态 setText 更新）
-    //    包含：Header 状态 + 拷问/规划/执行内容 + StatusBar 提示
-    this.streamMarkdown = new Markdown(this.streamContent, 1, 0, {
-      heading: (t) => `\x1b[1;36m${t}\x1b[0m`,
-      link: (t) => `\x1b[4;34m${t}\x1b[0m`,
-      linkUrl: (t) => `\x1b[2;34m${t}\x1b[0m`,
-      code: (t) => `\x1b[33m${t}\x1b[0m`,
-      codeBlock: (t) => `\x1b[33m${t}\x1b[0m`,
-      codeBlockBorder: (t) => `\x1b[90m${t}\x1b[0m`,
-      quote: (t) => `\x1b[36m${t}\x1b[0m`,
-      quoteBorder: (t) => `\x1b[90m${t}\x1b[0m`,
-      hr: (t) => `\x1b[90m${t}\x1b[0m`,
-      listBullet: (t) => `\x1b[90m${t}\x1b[0m`,
-      bold: (t) => `\x1b[1m${t}\x1b[0m`,
-      italic: (t) => `\x1b[3m${t}\x1b[0m`,
-      strikethrough: (t) => `\x1b[9m${t}\x1b[0m`,
-      underline: (t) => `\x1b[4m${t}\x1b[0m`,
-    });
-    this.tui.addChild(this.streamMarkdown);
-
-    // 2. 底部输入框（Input 组件，固定焦点）
-    this.inputComponent = new Input();
-    this.inputComponent.onSubmit = (value: string) => {
-      // ★ 关键：onSubmit 在 pi-tui 的 handleInput 链中被调用，
-      // 任何异常都会冒泡到 stdin data handler 导致进程崩溃。
-      // 必须用 try-catch 包裹，并用 .catch() 捕获 async rejection。
-      try {
-        const result = this.handleInput(value);
-        // handleInput 是 async 的，必须捕获 rejection
-        if (result && typeof result === "object" && "catch" in result) {
-          (result as Promise<void>).catch((err) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            this.appendStream("\n⚠️ 输入处理错误: " + msg + "\n\n");
-          });
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.appendStream("\n⚠️ 输入处理错误: " + msg + "\n\n");
-      }
-    };
-    this.inputComponent.onEscape = () => {
-      // ★ ESC 跳过当前拷问问题（如果正在拷问阶段）
-      if (this.interrogateCoordinator) {
-        this.interrogateCoordinator.handleInput("__SKIP__").catch(() => { /* ignore */ });
-      }
-    };
-    this.tui.addChild(this.inputComponent);
-
-    // 设置焦点到输入框
-    this.tui.setFocus(this.inputComponent);
-  }
-
-  /** 构建 Header 文本 */
-  private buildHeaderText(): string {
-    const stateInfo = getStateDisplay(this.state.loopState);
-    const taskIdStr = this.state.currentTaskId ? ` | Task: ${this.state.currentTaskId.slice(0, 8)}` : "";
-    return ` AI Company OS v0.1.0 [${stateInfo.label}]${taskIdStr} `;
-  }
-
-  /** 构建 StatusBar 文本 */
-  private buildStatusBarText(): string {
-    const stateInfo = getStateDisplay(this.state.loopState);
-    const lockIcon = this.inputLocked ? "🔒" : "✏️";
-    return this.inputLocked
-      ? ` ${lockIcon} ${stateInfo.label} · Esc: 跳过 · q: 退出 `
-      : ` ${lockIcon} Enter: 提交 · /type: 切换类型 · q: 退出 `;
-  }
-
-  /** ★ 增量更新 Header 和 StatusBar（更新流式内容的首行和末行） */
-  private updateHeaderContent(): void {
-    // Header/StatusBar 信息已在 appendStream 中更新，无需额外操作
-  }
-
-  private updateStatusBarContent(): void {
-    // 同上
-  }
-
-  /**
    * 主渲染入口
-   * TUI 模式：重建组件树并请求重绘
+   * TUI 模式：请求重绘
    * 非TUI模式：回退到终端输出
    */
   render(): void {
-    if (this.tui) {
-      // ★ pi-tui 模式：增量更新（不重建组件树！）
-      // 只更新 Header 和 StatusBar 的文本内容，不销毁 Input 组件
-      this.updateHeaderContent();
-      this.updateStatusBarContent();
-      this.tui.requestRender();
+    if (this.tuiManager.isInitialized) {
+      this.tuiManager.requestRender();
     } else {
       // 回退模式：手写 ASCII art
       this.renderToTerminal();
@@ -648,17 +475,6 @@ export class AICOSApp {
   // ============================================================
   // ★ pi-tui 组件构建方法（返回 Component 树）
   // ============================================================
-
-  /** 构建顶栏组件: Box + Text（应用名 + 状态 + TaskID） */
-  private buildHeaderComponent(): Component {
-    const stateInfo = getStateDisplay(this.state.loopState);
-    const taskIdStr = this.state.currentTaskId ? ` | Task: ${this.state.currentTaskId.slice(0, 8)}` : "";
-    const headerText = ` AI Company OS v0.1.0 [${stateInfo.label}]${taskIdStr} `;
-
-    const box = new Box(1, 0, (t) => `\x1b[44;97m${t}\x1b[0m`);
-    box.addChild(new Text(headerText, 0, 0));
-    return box;
-  }
 
   /** 构建主区域组件: 根据 mode 返回不同内容 */
   private buildMainComponent(): Component {
@@ -812,70 +628,24 @@ export class AICOSApp {
     return new Text(lines.join("\n"), 1, 1);
   }
 
-  /** ★ 构建底部状态栏组件（快捷键提示 + 状态信息） */
-  private buildStatusBarComponent(): Component {
-    const stateInfo = getStateDisplay(this.state.loopState);
-    const lockIcon = this.inputLocked ? "🔒" : "✏️";
-    const statusText = this.inputLocked
-      ? ` ${lockIcon} ${stateInfo.label} · Esc: 跳过 · q: 退出 `
-      : ` ${lockIcon} Enter: 提交 · /type: 切换类型 · q: 退出 `;
-    return new Text(statusText, 0, 0);
-  }
-
   // ============================================================
-  // ★ 流式内容管理（Claude Code 风格）
+  // ★ 流式内容管理（委托给 TUIManager）
   // ============================================================
 
   /**
    * 追加流式内容到 Markdown 区域
-   *
-   * 所有 Agent 产出、评估、工具调用、进度信息都通过此方法追加。
-   * 自动触发 TUI 重绘。
+   * 委托给 TUIManager.appendStream()
    */
   private appendStream(content: string): void {
-    try {
-      this.streamContent += content;
-      if (this.streamMarkdown) {
-        this.streamMarkdown.setText(this.streamContent);
-      }
-      this.scheduleRender();
-    } catch {
-      // ★ 静默失败 — appendStream 是最底层渲染方法，绝不能抛出异常
-      // 否则所有 30+ 调用点都会崩溃，包括全局错误处理器（导致递归崩溃）
-      // 降级：写入原始 console（如果可用）
-      if (this._originalConsoleLog) {
-        try { this._originalConsoleLog("[appendStream fallback]", content); } catch { /* 彻底放弃 */ }
-      }
-    }
-  }
-
-  /**
-   * 清空流式内容区
-   */
-  private clearStream(): void {
-    this.streamContent = "";
-    if (this.streamMarkdown) {
-      this.streamMarkdown.setText("");
-    }
+    this.tuiManager.appendStream(content);
   }
 
   /**
    * ★ 锁定/解锁输入框
-   *
-   * 执行中锁定输入框，完成后解锁。
-   * ★ 每次解锁后重新聚焦 Input 组件，确保键盘事件正确分发。
+   * 委托给 TUIManager.setInputLocked()
    */
   private setInputLocked(locked: boolean): void {
-    this.inputLocked = locked;
-    if (this.inputComponent) {
-      if (locked) {
-        this.inputComponent.setValue("");
-      }
-      // ★ 重新聚焦 Input 组件（确保键盘事件正确分发）
-      if (this.tui) {
-        this.tui.setFocus(this.inputComponent);
-      }
-    }
+    this.tuiManager.setInputLocked(locked);
   }
 
   /** 构建侧边栏组件: MCP 状态 + 工具列表 */
@@ -949,11 +719,6 @@ export class AICOSApp {
   async handleInput(input: string): Promise<void> {
     const trimmed = input.trim();
 
-    // ★ 清空 Input 组件的值（为下一次输入做准备）
-    if (this.inputComponent) {
-      this.inputComponent.setValue("");
-    }
-
     // ★★★ 优先级 1：拷问阶段输入（必须在 q/inputLocked 之前判断！）
     // 否则用户在拷问阶段输入 q 会被全局快捷键拦截导致 TUI 退出
     if (this.state.activeModal === "interrogate" && this.interrogateCoordinator) {
@@ -962,7 +727,7 @@ export class AICOSApp {
     }
 
     // ★★★ 优先级 2：执行中锁定（只接受 q 退出）
-    if (this.inputLocked) {
+    if (this.tuiManager.isInputLocked) {
       if (trimmed.toLowerCase() === "q") {
         this.quit();
       }
@@ -1091,8 +856,8 @@ export class AICOSApp {
         this.render();
       } catch (err) {
         // ★ 状态变更回调异常不能中断 executeLoop
-        if (this._originalConsoleLog) {
-          this._originalConsoleLog("[stateChange error]", err);
+        if (this.tuiManager.originalConsoleLog) {
+          this.tuiManager.originalConsoleLog("[stateChange error]", err);
         }
       }
     });
@@ -1174,7 +939,7 @@ export class AICOSApp {
     this.render();
   }
 
-  // ★ ADR-005: 内容类型选择（部门路由核心）
+  // ★ ADR-005: 内容类型选择（委托给 DepartmentSetup）
 
   /**
    * 显示可用内容格式菜单
@@ -1182,10 +947,10 @@ export class AICOSApp {
    * 非TUI模式：回退到 console.log
    */
   showContentTypeMenu(): void {
-    const types = this.contentDept.getAvailableTypes();
+    const types = this.departmentSetup.getContentDept().getAvailableTypes();
 
     // ★ TUI 模式：用 SelectList overlay 替代 console.log
-    if (this.tui) {
+    if (this.tuiManager.isInitialized) {
       const selectItems = types.map((t: { type: string; label: string; description: string }) => ({
         value: t.type,
         label: t.label,
@@ -1208,12 +973,10 @@ export class AICOSApp {
       selectList.onSelect = async (item) => {
         try {
           await this.selectContentType(item.value);
-          if (this.tui) {
-            this.tui.hideOverlay(); // 关闭选择器
-          }
+          this.tuiManager.hideOverlay();
         } catch (err) {
-          if (this._originalConsoleLog) {
-            this._originalConsoleLog("[onSelect error]", err);
+          if (this.tuiManager.originalConsoleLog) {
+            this.tuiManager.originalConsoleLog("[onSelect error]", err);
           }
         }
       };
@@ -1221,18 +984,16 @@ export class AICOSApp {
       // ESC 取消
       selectList.onCancel = () => {
         try {
-          if (this.tui) {
-            this.tui.hideOverlay();
-          }
+          this.tuiManager.hideOverlay();
         } catch (err) {
-          if (this._originalConsoleLog) {
-            this._originalConsoleLog("[onCancel error]", err);
+          if (this.tuiManager.originalConsoleLog) {
+            this.tuiManager.originalConsoleLog("[onCancel error]", err);
           }
         }
       };
 
       // 显示为居中浮层
-      this.tui.showOverlay(selectList, {
+      this.tuiManager.showOverlay(selectList, {
         width: "60%",
         anchor: "center",
       });
@@ -1242,8 +1003,9 @@ export class AICOSApp {
     }
 
     // 非 TTY 回退：原始 console.log
-    const current = this.selectedContentType
-      ? `\n  ✅ 当前选择: ${types.find((t: { type: string; label: string }) => t.type === this.selectedContentType)?.label ?? this.selectedContentType}`
+    const selectedContentType = this.departmentSetup.getSelectedContentType();
+    const current = selectedContentType
+      ? `\n  ✅ 当前选择: ${types.find((t: { type: string; label: string }) => t.type === selectedContentType)?.label ?? selectedContentType}`
       : "\n  ⚪ 未选择（默认使用 article）";
 
     console.log(`
@@ -1254,7 +1016,7 @@ export class AICOSApp {
 
     for (let i = 0; i < types.length; i++) {
       const t = types[i];
-      const marker = t.type === this.selectedContentType ? "▸" : " ";
+      const marker = t.type === selectedContentType ? "▸" : " ";
       console.log(`  ${marker} [${i + 1}] ${t.label.padEnd(18)} ${t.description}`);
     }
 
@@ -1270,137 +1032,23 @@ export class AICOSApp {
 
   /**
    * 选择内容格式并加载对应部门配置
-   *
-   * 这是 ADR-005 部门路由的核心方法：
-   * 1. 根据 contentType 获取 DepartmentConfig
-   * 2. 将配置注入 LoopHarness
-   * 3. 将 Writer Prompt 注入 WriterAgent
-   * 4. 将 Critic 维度注入 CriticAgent
+   * 委托给 DepartmentSetup.selectContentType()
    */
   async selectContentType(type: string | ContentType): Promise<void> {
-    // 支持数字快捷键 (1-4)
-    const typeMap: Record<string, ContentType> = {
-      "1": "article",
-      "2": "seed",
-      "3": "short-video",
-      "4": "newsletter",
-    };
-
-    const resolvedType = typeMap[type] ?? type as ContentType;
-    const validTypes = ContentProductionDepartment.SUPPORTED_TYPES;
-
-    if (!validTypes.includes(resolvedType)) {
-      this.addLog("warn", "department", `不支持的内容格式: "${type}"，可用: ${validTypes.join(", ")}`);
-      console.log(`\n⚠️ 不支持的内容格式: "${type}"\n   可用: ${validTypes.join(", ")}\n   输入 /type 查看列表\n`);
-      return;
-    }
-
-    try {
-      // 1. 获取部门配置
-      const deptConfig = this.contentDept.getConfig(resolvedType);
-      this.selectedContentType = resolvedType;
-      this.activeDepartmentConfig = deptConfig;
-
-      // 2. 注入 LoopHarness（含 departmentConfig + outputProcessor 回调）
-      this.loopHarness.setDepartmentConfig(deptConfig);
-
-      // ★ ADR-005: 注入 outputProcessor 回调 — 解决 loop-engine ↔ content-production 循环依赖
-      // CLI 层静态导入 OutputPipeline（cli → content-production 方向，无循环），
-      // 通过 setOutputProcessor() 闭包注入到 LoopHarness
-      if (deptConfig.outputPipeline) {
-        const pipelineConfig = deptConfig.outputPipeline;
-        this.loopHarness.setOutputProcessor(async (rawContent, ctx) => {
-          const pipeline = new OutputPipeline(pipelineConfig);
-          return pipeline.process(rawContent, ctx);
-        });
-        this.addLog("info", "department", "outputProcessor 回调已通过 setOutputProcessor() 注入");
-      }
-
-      // 3. 注入 WriterAgent customSystemPrompt
-      if (this.writerAgent) {
-        this.writerAgent.setCustomSystemPrompt(deptConfig.agentProfile.writerSystemPrompt);
-      }
-
-      // 4. 如果有专属 Critic 维度，更新 CriticAgent
-      if (this.criticAgent && deptConfig.agentProfile.criticDimensions) {
-        this.criticAgent.setCustomDimensions?.(deptConfig.agentProfile.criticDimensions);
-      }
-
-      // 5. 部门动态团队组建（Phase F：部门 + 动态团队打通）
-      if (deptConfig.teamManager) {
-        try {
-          const team = await deptConfig.teamManager.composeTeam(this.state.currentTaskInput ?? "", {
-            contentType: resolvedType,
-            departmentId: deptConfig.departmentId,
-            availableRoles: [...WORKER_ROLES],
-          });
-          const workerTypes = team.workers.map((w: { agentType: string }) => w.agentType).join(", ");
-          this.addLog("info", "team",
-            `动态团队组建完成: ${team.workers.length} 人 [${workerTypes}] (规则: ${team.matchedRuleId})`
-          );
-        } catch (teamErr) {
-          this.addLog("warn", "team",
-            `动态团队组建失败（降级到默认双核）: ${teamErr instanceof Error ? teamErr.message : teamErr}`
-          );
-        }
-      }
-
-      const typeLabel = this.contentDept.getAvailableTypes().find((t: { type: string; label: string }) => t.type === resolvedType)?.label ?? resolvedType;
-      this.addLog("info", "department",
-        `已切换到内容产出部 → ${typeLabel} (${resolvedType})`
-      );
-      console.log(`\n✅ 已切换到: ${typeLabel}\n   Writer Prompt 已注入 | GoalTemplates 已加载 | OutputPipeline 已配置\n`);
-      this.render();
-    } catch (e) {
-      this.addLog("error", "department",
-        `部门配置加载失败: ${e instanceof Error ? e.message : e}`
-      );
-    }
+    await this.departmentSetup.selectContentType(type);
+    this.render();
   }
 
   // ============================================================
-  // ★ Console 拦截（TUI 模式下防止日志泄漏）
+  // ★ Console 拦截（委托给 TUIManager）
   // ============================================================
-
-  /** 保存原始 console 方法 */
-  private _originalConsoleLog: typeof console.log | null = null;
-  private _originalConsoleWarn: typeof console.warn | null = null;
-  private _originalConsoleError: typeof console.error | null = null;
-
-  /**
-   * ★ 拦截 console.log/warn/error → 静默丢弃
-   *
-   * TUI 模式下 console.log 直接输出会破坏差分渲染。
-   * 关键日志已通过回调机制输出到流式内容区，console.log 全部静默。
-   */
-  private interceptConsoleToStream(): void {
-    this._originalConsoleLog = console.log;
-    this._originalConsoleWarn = console.warn;
-    this._originalConsoleError = console.error;
-
-    // TUI 模式下：所有 console.log 静默丢弃
-    // 关键日志已通过 onIterationStart/onWriterOutput/onCriticResult 回调输出
-    console.log = function(..._args: unknown[]): void {};
-    console.warn = function(..._args: unknown[]): void {};
-    console.error = function(..._args: unknown[]): void {};
-  }
-
-  private interceptConsole(): void {
-    this.interceptConsoleToStream();
-  }
 
   /**
    * ★ 恢复原始 console 方法
-   *
-   * 在退出 TUI 模式前调用，确保后续输出正常。
+   * 委托给 TUIManager.restoreConsole()
    */
   private restoreConsole(): void {
-    if (this._originalConsoleLog) console.log = this._originalConsoleLog;
-    if (this._originalConsoleWarn) console.warn = this._originalConsoleWarn;
-    if (this._originalConsoleError) console.error = this._originalConsoleError;
-    this._originalConsoleLog = null;
-    this._originalConsoleWarn = null;
-    this._originalConsoleError = null;
+    this.tuiManager.restoreConsole();
   }
 
   /**
@@ -1409,18 +1057,13 @@ export class AICOSApp {
   quit(): void {
     this.addLog("info", "app", "正在退出...");
     this.running = false;
+    this.tuiManager.setRunning(false);
     this.closeModal();
 
     // ★ 恢复 console（在 stop TUI 之前，确保再见消息能正常输出）
     this.restoreConsole();
 
-    if (this.tui) {
-      try {
-        this.tui.stop();
-      } catch {
-        // 忽略
-      }
-    }
+    this.tuiManager.destroy();
 
     console.log("\n👋 再见！");
     process.exit(0);
@@ -1448,10 +1091,16 @@ export class AICOSApp {
     this.appendStream("正在生成执行计划...\n\n");
 
     try {
+      // Phase F: 根据动态团队确定可用 Agent 类型
+      const activeTeam = this.departmentSetup.getActiveTeam();
+      const availableAgents: (WorkerRole | string)[] = activeTeam
+        ? [...new Set(activeTeam.workers.map((w: { agentType: WorkerRole | string }) => w.agentType))]
+        : ["writer", "critic", "ui-ux"];
+
       const result = await this.planEngine.generatePlan({
         taskInput,
         interrogationResults: this.interrogateCoordinator?.result.cachedResults ?? {},
-        availableAgents: ["writer", "critic", "ui-ux"],
+        availableAgents,
         availableTools: this.toolRegistry.listAll().map(t => t.name),
       });
 
@@ -1719,6 +1368,14 @@ export class AICOSApp {
         this.addLog("info", "memory",
           `已注入 ${examples.length} 条动态样例（${successes.length} 高分 + ${failures.length} 低分）`
         );
+
+        // Phase E: 对命中并被使用的经验提升 Q-Value（反馈闭环）
+        const usedEntries = [...successes, ...failures];
+        await Promise.all(
+          usedEntries.map((e) =>
+            evolution.bumpExperienceUtility(e.entryId, 0.05).catch(() => {})
+          )
+        );
       }
     } catch (e) {
       // 非致命：Memory 查询失败不影响主流程
@@ -1736,76 +1393,8 @@ export class AICOSApp {
     // 非TUI模式下，streamContent 已通过 console.log 拦截输出到终端
     // 这里只输出状态栏信息
     const stateInfo = getStateDisplay(this.state.loopState);
-    const lockIcon = this.inputLocked ? "🔒" : "✏️";
+    const lockIcon = this.tuiManager.isInputLocked ? "🔒" : "✏️";
     console.log(`\n${lockIcon} [${stateInfo.label}] Enter: 提交 | /type: 切换类型 | q: 退出\n`);
-  }
-
-  /**
-   * 将 Modal 内容渲染到终端
-   */
-  private renderModalToTerminal(): void {
-    const renderResult = this.interrogateCoordinator?.renderModal();
-    if (!renderResult) return;
-
-    console.log("┌─ 拷问向导 ─────────────────────────┐");
-
-    if (renderResult.type === "question" && renderResult.card) {
-      const card = renderResult.card;
-      console.log(`│  ${card.stepLabel.padEnd(34)}│`);
-      console.log(`│  ${card.progressDots.padEnd(34)}│`);
-      console.log("│                                      │");
-      console.log(`│  ${card.dimensionEmoji} ${card.dimensionLabel}`.padEnd(39) + "│");
-      console.log("│                                      │");
-
-      if (card.collectedInfo.length > 0) {
-        console.log("│  已收集信息:                          │");
-        for (const info of card.collectedInfo) {
-          console.log(`│    • ${info.slice(0, 30).padEnd(30)}│`);
-        }
-        console.log("│                                      │");
-      }
-
-      console.log("│  问题:                                │");
-      // 折行长问题文本
-      const words = card.promptText.split(" ");
-      let line = "│    ";
-      for (const word of words) {
-        if ((line + word).length > 37) {
-          console.log(line.padEnd(38) + "│");
-          line = "│    ";
-        }
-        line += word + " ";
-      }
-      console.log(line.padEnd(38) + "│");
-
-      if (card.hints.length > 0) {
-        console.log("│                                      │");
-        console.log("│  提示:                                │");
-        for (const hint of card.hints.slice(0, 3)) {
-          console.log(`│    - ${hint.slice(0, 30).padEnd(30)}│`);
-        }
-      }
-
-      console.log("│                                      │");
-      console.log(`│  > ${"_".repeat(30)}│`);
-      console.log(`│  ${card.footerHints.padEnd(34)}│`);
-    } else if (renderResult.type === "summary" && renderResult.summary) {
-      const summary = renderResult.summary;
-      console.log(`│  📋 拷问摘要 · 共 ${summary.totalQuestions} 题`.padEnd(39) + "│");
-      console.log("│                                      │");
-
-      for (let i = 0; i < summary.qaPairs.length; i++) {
-        const qa = summary.qaPairs[i];
-        const prefix = i === summary.currentIndex ? "▸" : " ";
-        const statusIcon = qa.skipped ? "(跳过)" : qa.answer ? "✓" : "?";
-        console.log(`│  ${prefix} [${statusIcon}] ${qa.dimension}: ${(qa.answer || "(空)").slice(0, 20).padEnd(20)}│`);
-      }
-
-      console.log("│                                      │");
-      console.log("│  [ Enter 确认 · ←→ 浏览修改 ]       │");
-    }
-
-    console.log("└──────────────────────────────────────┘");
   }
 
   /**
@@ -1826,76 +1415,8 @@ export class AICOSApp {
 
     // ★ TUI 模式下：日志变化时自动触发重绘（实时更新 Footer）
     // 使用节流避免高频日志导致过度渲染
-    if (this.tui && this.running) {
-      this.scheduleRender();
-    }
-  }
-
-  /** ★ 渲染节流：最多每 200ms 重绘一次 */
-  private _renderTimer: ReturnType<typeof setTimeout> | null = null;
-  private scheduleRender(): void {
-    if (this._renderTimer) return; // 已有待执行的渲染
-    this._renderTimer = setTimeout(() => {
-      this._renderTimer = null;
-      if (this.tui && this.running) {
-        // ★ 增量更新：只更新 Markdown 内容 + 状态栏，不重建整个组件树
-        if (this.streamMarkdown) {
-          this.streamMarkdown.setText(this.streamContent);
-        }
-        this.tui.requestRender();
-      }
-    }, 200);
-  }
-
-  /**
-   * 为 pi-agent-core 的 agentLoop 构造 pi-ai Model。
-   *
-   * 使用 pi-ai 官方 getModel 获取 OpenAI 标准模型元数据，再覆盖 baseUrl
-   * 指向 OPENAI_API_BASE（兼容 LongCat 等 OpenAI-compatible 代理）。
-   * 若环境变量未配置或模型 ID 不被 pi-ai 识别，则回退到兼容手搓循环。
-   */
-  private createPiAiModel(): import("@earendil-works/pi-ai").Model<"openai-completions"> | undefined {
-    const modelId = process.env.OPENAI_MODEL;
-    const baseUrl = process.env.OPENAI_API_BASE;
-    if (!modelId || !baseUrl) {
-      console.warn("[CLI] 未配置 OPENAI_MODEL/OPENAI_API_BASE，agentLoop 将回退到兼容手搓循环");
-      return undefined;
-    }
-
-    try {
-      const model = getModel("openai", modelId as any);
-      return { ...model, baseUrl };
-    } catch {
-      console.warn(`[CLI] pi-ai 不识别模型 "${modelId}"，agentLoop 将回退到兼容手搓循环`);
-      return undefined;
-    }
-  }
-
-  /**
-   * 创建默认 LLM Provider
-   * 从环境变量读取配置，强制使用真实 API（禁止 Mock）
-   */
-  private createDefaultLLMProvider(): LLMProvider {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey || apiKey.trim().length === 0) {
-      throw new Error(
-        "❌ 未检测到 OPENAI_API_KEY 环境变量。请在 .env 文件中配置或设置环境变量后重试。\n" +
-        "   所需变量: OPENAI_API_KEY, OPENAI_API_BASE, OPENAI_MODEL"
-      );
-    }
-
-    try {
-      const provider = PiAILLMProvider.fromEnvSync();
-      console.log("✅ 检测到 API 配置，使用真实 LLM Provider (LongCat)");
-      // 异步初始化（不阻塞构造）
-      provider.init().catch((err) => {
-        console.error(`⚠️ LLM Provider 初始化失败: ${err.message}`);
-      });
-      return provider;
-    } catch (error) {
-      throw new Error(
-        `❌ 创建 LLM Provider 失败: ${error instanceof Error ? error.message : error}`
-      );
+    if (this.tuiManager.isInitialized && this.running) {
+      this.tuiManager.requestRender();
     }
   }
 }
@@ -1905,41 +1426,6 @@ export class AICOSApp {
 /** 生成任务 ID */
 function generateTaskId(): string {
   return `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-/** 延迟工具函数 */
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** 进度动画帧（从 evolution-panel 导入的简化版）*/
-function getEvolutionAnimationFrame(frameIndex: number): {
-  phase: "analyzing" | "generating" | "applying" | "complete";
-  progress: number;
-} {
-  const totalFrames = 40;
-
-  if (frameIndex < totalFrames * 0.2) {
-    return {
-      phase: "analyzing",
-      progress: Math.min(20, Math.round((frameIndex / (totalFrames * 0.2)) * 20)),
-    };
-  } else if (frameIndex < totalFrames * 0.5) {
-    return {
-      phase: "generating",
-      progress: Math.min(50, 20 + Math.round(((frameIndex - totalFrames * 0.2) / (totalFrames * 0.3)) * 30)),
-    };
-  } else if (frameIndex < totalFrames * 0.85) {
-    return {
-      phase: "applying",
-      progress: Math.min(85, 50 + Math.round(((frameIndex - totalFrames * 0.5) / (totalFrames * 0.35)) * 35)),
-    };
-  } else {
-    return {
-      phase: "complete",
-      progress: Math.min(100, 85 + Math.round(((frameIndex - totalFrames * 0.85) / (totalFrames * 0.15)) * 15)),
-    };
-  }
 }
 
 /**

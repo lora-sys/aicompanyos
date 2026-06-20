@@ -220,10 +220,22 @@ export class CriticAgent implements AgentExecutor, IEvaluatorAgent<WriterOutput>
   private buildEvaluatePrompt(originalTask: string, content: string): string {
     let prompt = `## 原始任务\n${originalTask}\n\n`;
     prompt += `## 待评估内容\n\`\`\`markdown\n${content}\n\`\`\`\n\n`;
-    prompt +=
-      '请对以上内容进行严格的多维度评估，返回 JSON 格式的结果，' +
-      '包含 totalScore、dimensionScores（数组，每项包含 dimensionId、rawScore、comment）、' +
-      'suggestions（数组，每项包含 dimensionId、severity、description、suggestion）、reasoning 字段。';
+    prompt += '请对以上内容进行严格的多维度评估。\n';
+    prompt += '将评估结果严格包裹在 json markdown 代码块中，例如：\n';
+    prompt += '```json\n';
+    prompt += '{\n';
+    prompt += '  "totalScore": 85,\n';
+    prompt += '  "dimensionScores": [\n';
+    prompt += '    { "dimensionId": "topic_accuracy", "rawScore": 17, "comment": "..." }\n';
+    prompt += '  ],\n';
+    prompt += '  "suggestions": [\n';
+    prompt += '    { "dimensionId": "topic_accuracy", "severity": "minor", "description": "...", "suggestion": "..." }\n';
+    prompt += '  ],\n';
+    prompt += '  "reasoning": "..."\n';
+    prompt += '}\n';
+    prompt += '```\n';
+    prompt += '注意：必须使用 markdown code block 包裹，不要将 JSON 裸露在正文中。\n';
+    prompt += 'JSON 必须包含 totalScore、dimensionScores、suggestions、reasoning 字段。';
     return prompt;
   }
 
@@ -467,8 +479,21 @@ export class CriticAgent implements AgentExecutor, IEvaluatorAgent<WriterOutput>
 
     prompt += `## 待审核内容\n\`\`\`markdown\n${content}\n\`\`\`\n\n`;
 
-    prompt +=
-      '请对以上内容进行五维评估，返回 JSON 格式的结果，包含 overallScore、dimensions（每个维度包含 score 和 comment）、passed、suggestions（数组）、reasoning 字段。';
+    prompt += '请对以上内容进行五维评估。\n';
+    prompt += '将评估结果严格包裹在 json markdown 代码块中，例如：\n';
+    prompt += '```json\n';
+    prompt += '{\n';
+    prompt += '  "overallScore": 85,\n';
+    prompt += '  "dimensions": { "topicAccuracy": { "score": 17, "comment": "..." } },\n';
+    prompt += '  "passed": true,\n';
+    prompt += '  "suggestions": [\n';
+    prompt += '    { "type": "content", "severity": "minor", "description": "...", "suggestion": "..." }\n';
+    prompt += '  ],\n';
+    prompt += '  "reasoning": "..."\n';
+    prompt += '}\n';
+    prompt += '```\n';
+    prompt += '注意：必须使用 markdown code block 包裹，不要将 JSON 裸露在正文中。\n';
+    prompt += 'JSON 必须包含 overallScore、dimensions、passed、suggestions、reasoning 字段。';
 
     return prompt;
   }

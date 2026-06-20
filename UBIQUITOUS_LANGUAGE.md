@@ -37,6 +37,7 @@
 | **IEvolutionAgent** | 自进化接口：分析迭代历史给出策略建议 | Evolution interface, Learner |
 | **WriterAgent** | IGeneratorAgent 的具体实现（写作场景） | Writer, ContentGenerator |
 | **CriticAgent** | IEvaluatorAgent 的具体实现（审核场景） | Critic, ContentEvaluator |
+| **ReviewerAgent** | 最终审查 Agent，检查平台规范合规性、品牌一致性、法律风险（3 维评分：platformCompliance / brandConsistency / legalRisk） | FinalReviewer, QualityGateAgent |
 | **PlanEngine** | IPlannerAgent 的具体实现 | Planner |
 | **SimpleEvolutionAgent** | IEvolutionAgent 的具体实现 | EvolutionAgent |
 
@@ -94,16 +95,17 @@
 
 | Term | Definition | Aliases to avoid |
 |------|-----------|------------------|
-| **ITeamManager** | 团队经理接口 — 纯编排层核心接口，两个方法：`composeTeam()` 组建团队 + `createWorkerFactories()` 生成工厂 Map。不执行 LLM 调用 | 团队经理, team manager |
+| **ITeamManager** | 团队经理接口 — 纯编排层核心接口，三个方法：`composeTeam()` 组建团队 + `createWorkerFactories()` 生成工厂 Map + `createWorkerFactoriesWithDeps(deps)` 生成含真实依赖的工厂 Map。不执行 LLM 调用 | 团队经理, team manager |
 | **TaskFeatures** | 任务特征（7 维）— TaskAnalyzer 从 taskInput 提取的结构化信息：domain / needsResearch / hasVisualContent / length / qualityTier / complexity / estimatedSteps | 任务特征, task features |
 | **ContentDomain** | 内容领域分类：tech / lifestyle / finance / education / general | 领域, domain |
 | **ITeam** | 团队 — 一次任务执行的 Agent 集合：id / taskId / workers[] / goal / features / matchedRuleId | 团队, team |
 | **IWorker** | 团队成员描述 — id / role / agentType / configOverride / required。不包含 Agent 实例，只含配置 | 工作成员, worker |
-| **WorkerRole** | Worker 角色枚举：writer(必需) / critic(必需) / researcher(可选) / uiux-designer(可选) / reviewer(可选) | 角色, role |
+| **WorkerRole** | Worker 角色类型联合：writer(必需) / critic(必需) / researcher(可选) / uiux-designer(可选) / reviewer(可选)。PlanStep.agentType 类型为 `WorkerRole | string`，已知角色编译期可检查，动态团队可扩展为任意 string | 角色, role |
 | **TeamCompositionRule** | 组合规则 — match(条件判断) + team(成员定义) + reasoning(原因) + priority(优先级)。按 priority 升序匹配，第一个命中决定团队 | 组合规则, rule |
 | **TaskAnalyzer** | 特征提取器 — 基于 RegExp 规则引擎从 taskInput 提取 TaskFeatures，不依赖 LLM | 分析器, analyzer |
 | **TeamComposer** | 规则匹配引擎 — 维护有序规则表，对 TaskFeatures 从上到下匹配，第一个命中返回团队定义 | 组合器, composer |
-| **WorkerRegistry** | 全局 Worker 注册表 — 管理所有可用 Worker 类型，支持 role/agentType 双索引查询 | 注册表, registry |
+| **WorkerRegistry** | 全局 Worker 注册表 — 管理所有可用 Worker 类型，支持 role/agentType 双索引查询。WorkerRegistration.defaultFactory 支持三种形式：AgentFactory / (deps: WorkerFactoryDeps) => AgentExecutor / null | 注册表, registry |
+| **WorkerFactoryDeps** | Worker 工厂依赖 — 包含 llmProvider 和 toolRegistry，由 CLI 层注入。用于 WorkerRegistration.defaultFactory 中接收依赖的工厂函数签名 | 工厂依赖, worker deps |
 | **HistoryReader** | Memory 回流读取器 — 读取 self.jsonl/user.jsonl/self.md → 构建 Prompt 前缀 → 注入 Writer System Prompt。护城河的**读取端** | 历史读取器, memory reader |
 | **HistoryPromptResult** | HistoryReader 的输出 — 包含 promptPrefix(Markdown 前缀文本) + stats(统计) + sourceData(原始数据引用) | 前缀结果, prompt result |
 | **护城河公式** | 写入能力 × 读取回流 × 决策影响 = 护城河强度。v0.3.0 只有写入端(100%)，v0.3.1 补齐读取端(可用) | moat, competitive advantage |
@@ -144,7 +146,11 @@
 | Term | Definition | Aliases to avoid |
 |------|-----------|------------------|
 | **LoopModule** | **Canonical 循环引擎** — 实现 Inner Loop 逻辑（Planner→Generator→Evaluator + Evolution） | 主引擎, core engine |
-| **LoopHarness** | LoopModule 的薄包装层，负责 CLI 集成和向后兼容 | 包装层, harness facade |
+| **LoopHarness** | LoopModule 的薄包装层，负责 CLI 集成和向后兼容；通过 IInnerLoopEngine 接口委托 Inner Loop 执行，不再直接依赖 LoopModule 或 PiAgentLoopEngine | 包装层, harness facade |
+| **IInnerLoopEngine** | Inner Loop 统一接口 — LoopHarness 通过此接口与具体 driver 解耦，两种实现：LegacyInnerLoopDriver（向后兼容）和 PiAgentInnerLoopDriver（pi-agent-core 驱动） | Inner Loop 接口, loop engine interface |
+| **LegacyInnerLoopDriver** | 基于 LoopModule 的 IInnerLoopEngine 实现 — 将现有 LoopModule 适配为统一接口，使用手搓 Writer→Critic 循环（向后兼容） | Legacy 驱动, 手搓循环 |
+| **PiAgentInnerLoopDriver** | 基于 pi-agent-core 的 IInnerLoopEngine 实现 — 使用 agentLoop 驱动 Writer→Critic 迭代，支持事件系统和流式输出 | PiAgent 驱动, agentLoop 驱动 |
+| **InnerLoopResult** | IInnerLoopEngine.run() 的统一返回类型 — 包含 iterations / bestOutput / finalScore / passed / excellent / stopCondition / completionProgress | Inner Loop 结果, loop result |
 | **VerifyEngine** | Outer Loop 的质量验证引擎，判定是否需要 Replan | 验证引擎, quality checker |
 | **InterrogateEngine** | 需求澄清引擎，LLM 生成拷问问题 | 拷问引擎, question engine |
 | **ConsensusEngine** | 多票制共识引擎，聚合多个审核者的投票 | 共识引擎, voting engine |
@@ -161,21 +167,25 @@ Task ──► InterrogateEngine ──► PlanEngine(IPlannerAgent)
                                         │
                     ┌───────────────────┼───────────────────┐
                     ▼                   ▼                   ▼
-             LoopModule ◄──── LoopHarness ◄──── CLI (app.ts)
-              │  │                  ▲
-              │  │         DepartmentConfig (ADR-005)
-              │  │           ├─ AgentProfile → Writer Prompt
-              │  │           ├─ QualityGate → Critic Dimensions
-              │  │           ├─ GoalTemplates → AcceptanceGoal[]
-              │  │           └─ OutputPipeline → ProcessedOutput
+             IInnerLoopEngine ◄─── LoopHarness ◄──── CLI (AICOSApp)
+              │  │                  ▲          │
+              │  │         DepartmentConfig     ├─ DepartmentSetup
+              │  │           ├─ AgentProfile    ├─ TUIManager
+              │  │           ├─ QualityGate     ├─ ProviderFactory
+              │  │           ├─ GoalTemplates   └─ HarnessFactory
+              │  │           └─ OutputPipeline
               │  │
-              │  ├─ WriterAgent(IGeneratorAgent).generate()
-              │  │     → 产出 Artifact
+              │  ├─ LegacyInnerLoopDriver (LoopModule 手搓循环)
+              │  │     └─ WriterAgent(IGeneratorAgent).generate()
+              │  │          → 产出 Artifact
+              │  │
+              │  ├─ PiAgentInnerLoopDriver (pi-agent-core agentLoop)
+              │  │     └─ WriterAgent → CriticAgent 迭代
               │  │
               │  ├─ CriticAgent(IEvaluatorAgent).evaluate()
               │  │     → GradingResult (vs GradingCriteria)
               │  │
-              │  ├─ CompletionGuard (ADR-004) ← 新增
+              │  ├─ CompletionGuard (ADR-004)
               │  │     → AcceptanceGoal[] 验证
               │  │     → VerificationMethod (7种)
               │  │     → StopCondition 判定
@@ -190,7 +200,7 @@ Task ──► InterrogateEngine ──► PlanEngine(IPlannerAgent)
          EvidenceChain (全量记录 + VerificationTraceEntry)
 
 Outer Loop: Execute → VerifyEngine → (❌) → Replan → Execute...
-Inner Loop: Generate → Evaluate → Guard.check() → (未达标) → Generate... (目标驱动)
+Inner Loop: IInnerLoopEngine.run() → Generate → Evaluate → Guard.check() → (未达标) → Generate... (目标驱动)
 
 Department 数据流:
   ContentProductionDepartment.getConfig(contentType)
@@ -200,9 +210,9 @@ Department 数据流:
 
 ## 示例对话
 
-> **Dev:** "当 **Task** 进入 **EXECUTING** 状态后，**LoopModule** 会怎么处理？"
+> **Dev:** "当 **Task** 进入 **EXECUTING** 状态后，**IInnerLoopEngine** 会怎么处理？"
 >
-> **Domain Expert:** "**LoopModule** 遍历 **ExecutionPlan** 中的每个 **PlanStep**，对每步启动一个 **Inner Loop**：先调用 **WriterAgent**（实现了 **IGeneratorAgent**）生成 **Artifact**，再调用 **CriticAgent**（实现了 **IEvaluatorAgent**）按 **GradingCriteria** 五维标准打分。如果达到 **EXCELLENCE_STOP**（90 分）就 STOP；否则通过 **IterationHandoff** 传递反馈进入下一 **Round**。"
+> **Domain Expert:** "**LoopHarness** 通过 **IInnerLoopEngine** 接口委托 Inner Loop 执行。如果是 **LegacyInnerLoopDriver**，则使用原有 **LoopModule** 的手搓循环；如果是 **PiAgentInnerLoopDriver**，则使用 pi-agent-core 的 agentLoop 驱动。两种 driver 遍历 **ExecutionPlan** 中的每个 **PlanStep**，对每步启动一个 Inner Loop：先调用 **WriterAgent**（实现了 **IGeneratorAgent**）生成 **Artifact**，再调用 **CriticAgent**（实现了 **IEvaluatorAgent**）按 **GradingCriteria** 五维标准打分。如果达到 **EXCELLENCE_STOP**（90 分）就 STOP；否则通过 **IterationHandoff** 传递反馈进入下一 **Round**。"
 >
 > **Dev:** "那如果 **Inner Loop** 跑完 4 轮还是不达标呢？"
 >
@@ -226,10 +236,10 @@ Department 数据流:
 - **决议：** 接口统一叫 **IEvaluatorAgent**，实现叫 **CriticAgent**，维度名称锁定为 **topicAccuracy/technicalDepth/codeQuality/readability/originality**
 - **已修复位置：** [critic/agent.ts](packages/subagents/src/critic/agent.ts)
 
-### 3. LoopHarness vs LoopModule（已统一）
+### 3. LoopHarness vs LoopModule vs IInnerLoopEngine（已统一）
 - **问题：** 两套竞争引擎并存，职责边界模糊
-- **决议：** **LoopModule** 为 canonical 引擎（包含所有核心逻辑），**LoopHarness** 降级为薄包装层（CLI 集成 + 向后兼容）
-- **已修复位置：** [loop-harness/engine.ts](packages/loop-engine/src/loop-harness/engine.ts) 已重构为 LoopModule wrapper
+- **决议：** **LoopModule** 为 canonical 引擎（包含所有核心逻辑），**LoopHarness** 降级为薄包装层（CLI 集成 + 向后兼容），**IInnerLoopEngine** 为统一接口（v0.5.0 新增）。LoopHarness 通过 IInnerLoopEngine 委托 Inner Loop 执行，不再直接依赖 LoopModule 或 PiAgentLoopEngine
+- **已修复位置：** [loop-harness/engine.ts](packages/loop-engine/src/loop-harness/engine.ts) 已重构为 IInnerLoopEngine 委托模式
 
 ### 4. Plan vs ExecutionPlan
 - **问题：** 有时简称 "Plan"，有时用全称 "ExecutionPlan"，可能引起混淆（与动词 "plan" 混淆）
@@ -245,4 +255,4 @@ Department 数据流:
 
 ---
 
-*最后更新：2026-06-18 | 基于端到端执行日志（3 轮 Outer Loop, 33 Artifacts, 全部通过）+ ADR-004 (CompletionGuard) + ADR-005 (Department Architecture)*
+*最后更新：2026-06-19 | 基于 v0.5.0 全量源码扫描（IInnerLoopEngine 统一接口 + ReviewerAgent + WorkerFactoryDeps + CLI 拆分 + WorkerRole 收紧）*

@@ -384,6 +384,10 @@ export interface DepartmentConfig {
   /** 部门专属质量门槛（为空则用默认 GradingCriteria） */
   qualityGate?: QualityGateConfig;
 
+  // === Threshold Profile（阈值档位）===
+  /** 阈值档位名称（对应 THRESHOLD_PROFILES 中的 key，如 "technical-blog" / "generic"） */
+  thresholdProfile?: string;
+
   // === Team（动态团队）===
   /** 部门专属动态团队管理器（为空则使用默认 Writer+Critic 双核） */
   teamManager?: import("../team/types.js").ITeamManager;

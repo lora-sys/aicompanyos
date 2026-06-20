@@ -112,5 +112,11 @@ export declare class HistoryReader {
     private proficiencyLevel;
     /** 成功率格式化 */
     private successRate;
+    /**
+     * 从成功经验的 capabilityDelta.improvedStrategies 中提取 top-N 策略
+     *
+     * 按出现频率排序，返回前 N 条不重复的策略。
+     */
+    private extractTopStrategies;
 }
 //# sourceMappingURL=history-reader.d.ts.map

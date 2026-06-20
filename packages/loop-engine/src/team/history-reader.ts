@@ -182,6 +182,16 @@ export class HistoryReader {
       sections.push("");
     }
 
+    // --- 高效策略库（从成功经验的 capabilityDelta.improvedStrategies 提取）---
+    const topStrategies = this.extractTopStrategies(experiences, 3);
+    if (topStrategies.length > 0) {
+      sections.push(`### 🏆 高效策略库`);
+      for (const strategy of topStrategies) {
+        sections.push(`- ${strategy}`);
+      }
+      sections.push("");
+    }
+
     // --- 已知限制 ---
     if (limitations.length > 0) {
       sections.push(`### 🚫 已知限制 / 注意事项`);
@@ -261,6 +271,10 @@ export class HistoryReader {
       // 时间衰减（越新越相关）
       const ageDays = (Date.now() - new Date(exp.timestamp).getTime()) / (1000 * 60 * 60 * 24);
       score += Math.max(0, 5 - Math.floor(ageDays / 30)); // 每月减1分，最低0
+
+      // Q-Value 权重（经验效用值，越高说明这条经验越有用）
+      const qValue = exp.qValue ?? (exp.type === "success" ? 1.0 : exp.type === "learning" ? 0.7 : 0.4);
+      score += qValue * 5;
 
       return { exp, score };
     });
@@ -343,5 +357,31 @@ export class HistoryReader {
     if (total === 0) return "暂无数据";
     const rate = ((cap.successCount / total) * 100).toFixed(0);
     return `${rate}% (${cap.successCount}/${total})`;
+  }
+
+  /**
+   * 从成功经验的 capabilityDelta.improvedStrategies 中提取 top-N 策略
+   *
+   * 按出现频率排序，返回前 N 条不重复的策略。
+   */
+  private extractTopStrategies(
+    experiences: SelfExperienceEntry[],
+    maxCount: number,
+  ): string[] {
+    const freq = new Map<string, number>();
+
+    for (const exp of experiences) {
+      if (exp.type !== "success") continue;
+      const strategies = exp.capabilityDelta?.improvedStrategies ?? [];
+      for (const s of strategies) {
+        freq.set(s, (freq.get(s) ?? 0) + 1);
+      }
+    }
+
+    // 按频率降序，取前 N 条
+    return [...freq.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, maxCount)
+      .map(([strategy]) => strategy);
   }
 }

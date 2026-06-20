@@ -5,6 +5,7 @@ import type {
   LoopHarness,
 } from "@aicos/loop-engine";
 import type { Artifact } from "@aicos/loop-engine";
+import { HistoryReader } from "@aicos/loop-engine";
 import type { MemoryManager } from "@aicos/memory";
 
 export interface ExecutionCoordinatorDeps {
@@ -88,6 +89,25 @@ export class ExecutionCoordinator {
 
     // v0.2.0: 从 Memory 历史数据提取 Few-shot 样例 → 注入 LoopHarness
     await injectMemoryExamples(plan);
+
+    // ★ HistoryReader: 构建历史上下文前缀 → 注入 LoopHarness
+    try {
+      const historyReader = new HistoryReader(
+        () => memoryManager.evolution.getSelfMD(),
+        () => memoryManager.evolution.getUserMD(),
+      );
+      const contentType = loopHarness.getConfig().departmentConfig?.contentType;
+      const historyResult = await historyReader.buildPromptPrefix(getTaskInput(), { contentType });
+      if (historyResult.promptPrefix) {
+        loopHarness.setPromptPrefix(historyResult.promptPrefix);
+        onLog("info", "memory",
+          `历史上下文已注入: ${historyResult.stats.experienceCount} 条经验, ` +
+          `${historyResult.stats.capabilityCount} 项能力 (${historyResult.stats.totalChars} 字符)`
+        );
+      }
+    } catch (e) {
+      onLog("warn", "memory", `历史上下文注入失败（非致命）: ${e instanceof Error ? e.message : e}`);
+    }
 
     try {
       // 使用 LoopHarness 执行（内部委托给 LoopModule）

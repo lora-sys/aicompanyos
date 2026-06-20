@@ -52,13 +52,29 @@ export declare class WriterAgent implements AgentExecutor, IGeneratorAgent<PlanS
      * ★ P0 主题防漂移：从输入上下文中提取原始任务主题
      *
      * 优先级：
-     * 1. interrogationResults 中的"原始任务"/"task"/"任务描述" 等维度
-     * 2. planStep.description（作为降级）
-     * 3. interrogationResults 的所有值拼接（最后手段）
+     * 0. input.originalTask（最直接来源 — 由 generate() 从 [ORIGINAL_USER_TASK] 标记预提取）
+     * 1. interrogationResults 中的“原始任务”/“task”等维度
+     * 2. planStep.description 中的 [ORIGINAL_USER_TASK] 标记（由 LoopHarness 注入）
+     * 3. planStep.description 本身（最后降级）
+     * 4. interrogationResults 的所有值拼接（最后手段）
      *
      * @returns 原始任务字符串，如果无法提取则返回 null
      */
     private extractOriginalTopic;
+    /**
+     * ★ P0 防漂移：从增强后的 plan.description 中提取 [ORIGINAL_USER_TASK] 标记内容
+     *
+     * LoopHarness 在 executeWithInnerLoopEngine() 中将原始任务焊入 description 顶部：
+     *   [ORIGINAL_USER_TASK] 用户的原始任务（最高优先级，不可偏离）：<原始输入>
+     *   [STEP_DESCRIPTION] 执行建议：<计划引擎描述>
+     *
+     * 此方法在 generate() 中被调用，将提取结果传入 WriterInput.originalTask，
+     * extractOriginalTopic() 以最高优先级使用该字段。
+     *
+     * @param description 增强后的 plan.description
+     * @returns 原始任务文本，未找到则返回 null
+     */
+    private extractOriginalTaskFromDescription;
     private writeArtifact;
 }
 //# sourceMappingURL=agent.d.ts.map

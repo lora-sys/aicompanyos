@@ -1,6 +1,10 @@
 # ADR-005: 部门制架构 (Department Architecture) — 内容产出部 v1
 
-> 状态：**草案 (Draft)** | 日期：2026-06-18 | 核心原则：先做深再做广
+> 状态：**已实施 (Implemented)** | 日期：2026-06-18 | 核心原则：先做深再做广
+>
+> 更新记录：
+> - 2026-06-19: v0.5.0 大重构 — WorkerRegistry 支持真实 factory（WorkerFactoryDeps 注入）；ITeamManager 新增 createWorkerFactoriesWithDeps(deps) 方法；ReviewerAgent 作为专用化 Agent 接入；CLI 拆分为 DepartmentSetup/TUIManager/ProviderFactory/HarnessFactory + 3 Coordinators；IInnerLoopEngine 统一接口替代 LoopHarness 直接依赖 LoopModule/PiAgentLoopEngine；PlanStep.agentType 收紧为 WorkerRole | string
+> - 2026-06-19: 部门配置新增 `teamManager` 字段，CLI 在切换内容格式时自动组建动态团队；ResearcherAgent 已接入多 Worker 执行路径。
 
 ---
 
@@ -511,4 +515,4 @@ if (result.bestOutput && this.config.departmentConfig?.outputPipeline) {
 
 ---
 
-*文档版本: v0.1-draft | 基于 ADR-004 (CompletionGuard) 构建 | 日期: 2026-06-18*
+*文档版本: v0.2-implemented | 基于 ADR-004 (CompletionGuard) 构建 + v0.5.0 重构更新 | 日期: 2026-06-19*

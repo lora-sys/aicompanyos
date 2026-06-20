@@ -6,6 +6,7 @@ import type { AgentExecutor, ToolRegistry, LLMProvider, PlanStep, IGeneratorAgen
 import { UIUXProMaxSkill } from "../ui-ux-pro-max/skill.js";
 import type { UIUXSkillOutput } from "../ui-ux-pro-max/types.js";
 import type { WriterInput, WriterOutput } from "./types.js";
+import { basename } from "node:path";
 
 export class WriterAgent implements AgentExecutor, IGeneratorAgent<PlanStep, WriterOutput> {
   static readonly AGENT_TYPE = "writer";
@@ -113,6 +114,12 @@ export class WriterAgent implements AgentExecutor, IGeneratorAgent<PlanStep, Wri
     feedback?: string,
     handoff?: IterationHandoff
   ): Promise<WriterOutput> {
+    // ★ P0 防漂移：从 plan.description 中提取 [ORIGINAL_USER_TASK] 标记中的原始任务
+    // IGeneratorAgent 接口没有 interrogationResults（和 AgentExecutor 不同），
+    // 因此 extractOriginalTopic() 无法通过优先级1（拷问结果）获取原始任务。
+    // 这里提前解析增强描述中的 [ORIGINAL_USER_TASK] 标记，通过 originalTask 字段直接传入。
+    const originalTask = this.extractOriginalTaskFromDescription(plan.description);
+
     const input: WriterInput = {
       taskId: plan.stepId,
       planStep: {
@@ -132,6 +139,8 @@ export class WriterAgent implements AgentExecutor, IGeneratorAgent<PlanStep, Wri
       },
       criticFeedback: feedback,
       rewriteRound: handoff?.round,
+      // ★ P0：直接传入提取后的原始任务，extractOriginalTopic() 以最高优先级使用此字段
+      originalTask: originalTask ?? undefined,
     };
 
     return this.writingWorkflow(input);
@@ -208,8 +217,10 @@ export class WriterAgent implements AgentExecutor, IGeneratorAgent<PlanStep, Wri
     // 步骤2：搜集资料
     let researchResults: string[] = [];
     if (input.planStep.toolsNeeded.includes("web_search")) {
+      // ★ P0 防漂移：使用原始任务主题搜索，而非带 [ORIGINAL_USER_TASK] 标记的增强描述
+      const searchTopic = this.extractOriginalTopic(input) || input.planStep.description;
       researchResults = await this.research(
-        input.planStep.description,
+        searchTopic,
         input.context,
         input.taskId
       );
@@ -547,14 +558,23 @@ export class WriterAgent implements AgentExecutor, IGeneratorAgent<PlanStep, Wri
    * ★ P0 主题防漂移：从输入上下文中提取原始任务主题
    *
    * 优先级：
-   * 1. interrogationResults 中的"原始任务"/"task"/"任务描述" 等维度
-   * 2. planStep.description（作为降级）
-   * 3. interrogationResults 的所有值拼接（最后手段）
+   * 0. input.originalTask（最直接来源 — 由 generate() 从 [ORIGINAL_USER_TASK] 标记预提取）
+   * 1. interrogationResults 中的“原始任务”/“task”等维度
+   * 2. planStep.description 中的 [ORIGINAL_USER_TASK] 标记（由 LoopHarness 注入）
+   * 3. planStep.description 本身（最后降级）
+   * 4. interrogationResults 的所有值拼接（最后手段）
    *
    * @returns 原始任务字符串，如果无法提取则返回 null
    */
   private extractOriginalTopic(input: WriterInput): string | null {
-    // 优先 1: 从拷问结果中查找明确的"任务"相关维度
+    // ★ 优先 0: 使用 generate() 预提取的 originalTask 字段
+    // 这是最可靠的来源，由 generate() 在构造输入时直接从 [ORIGINAL_USER_TASK] 标记中解析，
+    // 绕过了 interrogationResults（在 IGeneratorAgent 路径中为空）和 regex fallback 的不稳定性
+    if (input.originalTask && input.originalTask.trim().length > 2) {
+      return input.originalTask.trim();
+    }
+
+    // 优先 1: 从拷问结果中查找明确的“任务”相关维度
     if (input.context.interrogationResults) {
       const taskKeys = [
         "原始任务", "task", "任务描述", "taskInput",
@@ -568,13 +588,26 @@ export class WriterAgent implements AgentExecutor, IGeneratorAgent<PlanStep, Wri
         }
       }
     }
-
-    // 优先 2: planStep.description 本身（至少比没有强）
+  
+    // ★ 优先 2: 从 planStep.description 中提取 [ORIGINAL_USER_TASK] 标记内容
+    // LoopHarness 会将用户原始任务焊入 description 顶部，格式：
+    // [ORIGINAL_USER_TASK] 用户的原始任务（最高优先级，不可偏离）：<原始任务>
+    // [STEP_DESCRIPTION] 执行建议：<步骤描述>
+    if (input.planStep.description) {
+      const originalTaskMatch = input.planStep.description.match(
+        /\[ORIGINAL_USER_TASK\][^\n]*[：:]\s*([^\n]+)/
+      );
+      if (originalTaskMatch && originalTaskMatch[1].trim().length > 2) {
+        return originalTaskMatch[1].trim();
+      }
+    }
+  
+    // 优先 3: planStep.description 本身（至少比没有强）
     if (input.planStep.description && input.planStep.description.trim().length > 5) {
       return input.planStep.description.trim();
     }
-
-    // 优先 3: 拷问结果的所有值拼接（取第一个有实质内容的）
+  
+    // 优先 4: 拷问结果的所有值拼接（取第一个有实质内容的）
     if (input.context.interrogationResults) {
       for (const [, value] of Object.entries(input.context.interrogationResults)) {
         if (typeof value === "string" && value.trim().length > 5) {
@@ -582,7 +615,29 @@ export class WriterAgent implements AgentExecutor, IGeneratorAgent<PlanStep, Wri
         }
       }
     }
+  
+    return null;
+  }
 
+  /**
+   * ★ P0 防漂移：从增强后的 plan.description 中提取 [ORIGINAL_USER_TASK] 标记内容
+   *
+   * LoopHarness 在 executeWithInnerLoopEngine() 中将原始任务焊入 description 顶部：
+   *   [ORIGINAL_USER_TASK] 用户的原始任务（最高优先级，不可偏离）：<原始输入>
+   *   [STEP_DESCRIPTION] 执行建议：<计划引擎描述>
+   *
+   * 此方法在 generate() 中被调用，将提取结果传入 WriterInput.originalTask，
+   * extractOriginalTopic() 以最高优先级使用该字段。
+   *
+   * @param description 增强后的 plan.description
+   * @returns 原始任务文本，未找到则返回 null
+   */
+  private extractOriginalTaskFromDescription(description: string): string | null {
+    const regex = /\[ORIGINAL_USER_TASK\][^\n]*[：:]\s*([^\n]+)/;
+    const match = description.match(regex);
+    if (match && match[1].trim().length > 2) {
+      return match[1].trim();
+    }
     return null;
   }
 
@@ -596,7 +651,7 @@ export class WriterAgent implements AgentExecutor, IGeneratorAgent<PlanStep, Wri
       throw new Error("file_write 工具不可用");
     }
 
-    const artifactPath = `./artifacts/${expectedOutput}`;
+    const artifactPath = `./artifacts/${basename(expectedOutput)}`;
 
     const result = await this.tools.execute({
       toolName: "file_write",
