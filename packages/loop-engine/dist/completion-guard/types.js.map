@@ -1,1 +1,0 @@
-{"version":3,"file":"types.js","sourceRoot":"","sources":["../../src/completion-guard/types.ts"],"names":[],"mappings":"AAAA;;;;;;;;;GASG;AAgSH,MAAM,CAAC,MAAM,+BAA+B,GAA0B;IACpE,SAAS,EAAE,EAAE;IACb,iBAAiB,EAAE,CAAC;IACpB,uBAAuB,EAAE,CAAC;IAC1B,kBAAkB,EAAE,IAAI;IACxB,qBAAqB,EAAE,KAAK;IAC5B,kCAAkC;CACnC,CAAC"}
