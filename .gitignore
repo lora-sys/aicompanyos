@@ -1,10 +1,12 @@
 node_modules
+dist
 .env
 .env.test
 .env.development
 .trae
 .codegraph
 
+# runtime data — kept locally, not in git
 artifacts
 memory
-*.node_modules
+*.log
